@@ -27,10 +27,7 @@ swiftc \
     -framework Cocoa \
     -framework Security \
     -o "$APP_BUNDLE/Contents/MacOS/SteamPack-arm64" \
-    "$PROJECT_ROOT/src/AppMain.swift" \
-    "$PROJECT_ROOT/src/SleepToggle.swift" \
-    "$PROJECT_ROOT/src/KeychainHelper.swift" \
-    "$PROJECT_ROOT/src/PasswordPrompt.swift"
+    "$PROJECT_ROOT"/src/*.swift
 
 # x86_64 build (optional - may fail on arm64-only environments)
 swiftc \
@@ -39,10 +36,7 @@ swiftc \
     -framework Cocoa \
     -framework Security \
     -o "$APP_BUNDLE/Contents/MacOS/SteamPack-x86_64" \
-    "$PROJECT_ROOT/src/AppMain.swift" \
-    "$PROJECT_ROOT/src/SleepToggle.swift" \
-    "$PROJECT_ROOT/src/KeychainHelper.swift" \
-    "$PROJECT_ROOT/src/PasswordPrompt.swift" 2>/dev/null || true
+    "$PROJECT_ROOT"/src/*.swift 2>/dev/null || true
 
 # Universal Binary (if x86_64 succeeded)
 if [ -f "$APP_BUNDLE/Contents/MacOS/SteamPack-x86_64" ]; then

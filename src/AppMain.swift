@@ -4,10 +4,12 @@ import ServiceManagement
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     let sleepToggle = SleepToggle()
+    let clamshellMode = ClamshellMode()
 
     // Menu items that need updating
     private var statusMenuItem: NSMenuItem!
     private var toggleMenuItem: NSMenuItem!
+    private var clamshellMenuItem: NSMenuItem!
     private var scheduledMenuItem: NSMenuItem!
     private var loginItemMenuItem: NSMenuItem!
 
@@ -23,9 +25,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupMenu()
         updateIcon()
 
-        if KeychainHelper.load() == nil {
-            promptPassword()
-        }
+
     }
 
     private func setupMenu() {
@@ -40,6 +40,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         toggleMenuItem = NSMenuItem(title: toggleText(), action: #selector(toggleSleep), keyEquivalent: "t")
         toggleMenuItem.target = self
         menu.addItem(toggleMenuItem)
+
+        clamshellMenuItem = NSMenuItem(title: clamshellText(), action: #selector(toggleClamshell), keyEquivalent: "c")
+        clamshellMenuItem.target = self
+        menu.addItem(clamshellMenuItem)
 
         // Scheduled sleep submenu
         scheduledMenuItem = NSMenuItem(title: "Scheduled Sleep", action: nil, keyEquivalent: "")
@@ -70,14 +74,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         loginItemMenuItem.target = self
         menu.addItem(loginItemMenuItem)
 
-        let changePwItem = NSMenuItem(title: "Change Password", action: #selector(changePassword), keyEquivalent: "")
-        changePwItem.target = self
-        menu.addItem(changePwItem)
-
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
+        menu.delegate = self  // 메뉴 열 때마다 caffeinate 생존 상태 재동기화
         statusItem.menu = menu
     }
 
@@ -85,6 +86,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let name: String
         if sleepTimer != nil {
             name = "hourglass.badge.eye"
+        } else if clamshellMode.isOn {
+            name = "laptopcomputer"
         } else if sleepToggle.isDisableSleep {
             name = "eye.fill"
         } else {
@@ -114,6 +117,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateMenu() {
         statusMenuItem.title = statusText()
         toggleMenuItem.title = toggleText()
+        clamshellMenuItem.title = clamshellText()
         loginItemMenuItem.title = loginItemText()
         updateIcon()
     }
@@ -129,11 +133,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return "Sleep in \(minutes)m"
             }
         }
+        if clamshellMode.isOn {
+            return "Clamshell Mode — Sleep Off"
+        }
         return sleepToggle.isDisableSleep ? "Sleep Disabled" : "Sleep Enabled"
     }
 
     private func toggleText() -> String {
         sleepToggle.isDisableSleep ? "Enable Sleep" : "Disable Sleep"
+    }
+
+    private func clamshellText() -> String {
+        clamshellMode.isOn ? "✓ Clamshell Mode (Battery)" : "  Clamshell Mode (Battery)"
+    }
+
+    @objc private func toggleClamshell() {
+        let result = clamshellMode.toggle()
+        switch result {
+        case .success:
+            updateMenu()
+        case .failed(let message):
+            let alert = NSAlert()
+            alert.messageText = "Clamshell Mode"
+            alert.informativeText = """
+            sudo 권한이 필요합니다. 터미널에서 1회 실행:
+
+            ~/steampack-fork/scripts/install-sudoers.sh
+
+            (\(message))
+            """
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "확인")
+            alert.runModal()
+        }
     }
 
     private var isLoginItemEnabled: Bool {
@@ -167,21 +199,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // If sleep is currently enabled, disable it first
         if !sleepToggle.isDisableSleep {
-            guard let password = KeychainHelper.load() else {
-                promptPassword()
-                return
-            }
-            let result = sleepToggle.toggle(password: password)
-            switch result {
-            case .success:
-                break
-            case .wrongPassword:
-                KeychainHelper.delete()
-                promptPassword()
-                return
-            case .failed:
-                return
-            }
+            let result = sleepToggle.toggle()
+            if case .failed = result { return }
         }
 
         // Cancel any existing timer
@@ -220,46 +239,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Re-enable sleep
         if sleepToggle.isDisableSleep {
-            guard let password = KeychainHelper.load() else { return }
-            _ = sleepToggle.toggle(password: password)
+            _ = sleepToggle.toggle()
+        }
+        // Clamshell Mode도 타이머 만료 시 함께 해제 (끄는 걸 잊는 리스크 방지)
+        if clamshellMode.isOn {
+            clamshellMode.set(false)
         }
         updateMenu()
     }
 
     @objc private func toggleSleep() {
-        guard let password = KeychainHelper.load() else {
-            promptPassword()
-            return
-        }
-
-        let result = sleepToggle.toggle(password: password)
+        let result = sleepToggle.toggle()
         switch result {
         case .success:
-            // Cancel any scheduled timer on manual toggle
             cancelScheduledSleep()
             updateMenu()
-        case .wrongPassword:
-            KeychainHelper.delete()
-            let alert = NSAlert()
-            alert.messageText = "SteamPack"
-            alert.informativeText = "Incorrect password. Please try again."
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "확인")
-            alert.runModal()
-            promptPassword()
         case .failed(let message):
             let alert = NSAlert()
             alert.messageText = "Error"
-            alert.informativeText = "pmset failed: \(message)"
+            alert.informativeText = "caffeinate failed: \(message)"
             alert.alertStyle = .critical
             alert.addButton(withTitle: "확인")
             alert.runModal()
-        }
-    }
-
-    @objc private func changePassword() {
-        if let pw = PasswordPrompt.show(message: "Enter new sudo password") {
-            KeychainHelper.save(password: pw)
         }
     }
 
@@ -267,10 +268,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
-    private func promptPassword() {
-        if let pw = PasswordPrompt.show() {
-            KeychainHelper.save(password: pw)
+    func applicationWillTerminate(_ notification: Notification) {
+        // 앱 종료 시 자식 caffeinate 정리 — 고아 프로세스가 보이지 않게 sleep을 계속 막는 것 방지
+        if sleepToggle.isDisableSleep {
+            _ = sleepToggle.toggle()
         }
+        // 커널 disablesleep도 원복 — 앱이 없으면 끌 수단이 사라지므로 반드시 해제
+        if clamshellMode.isOn {
+            clamshellMode.set(false)
+        }
+    }
+}
+
+extension AppDelegate: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        sleepToggle.refresh()
+        clamshellMode.refresh()
+        updateMenu()
     }
 }
 
