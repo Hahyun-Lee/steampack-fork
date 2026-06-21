@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 메인 앱은 caffeinate/sudo pmset 실행을 위해 샌드박스를 켜지 않는다.
+         App Group 컨테이너 접근을 위해 application-groups 엔타이틀먼트만 부여. -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.steampack.shared</string>
+    </array>
+</dict>
+</plist>

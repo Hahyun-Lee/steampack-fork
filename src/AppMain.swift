@@ -1,5 +1,7 @@
 import Cocoa
 import ServiceManagement
+import WidgetKit
+import IOKit.ps
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
@@ -18,6 +20,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var timerEndDate: Date?
     private var countdownTimer: Timer?
 
+    // Control Center 토글의 "켜짐" 의도 (전원 변경 시 알맞은 방식으로 재적용하기 위함)
+    private var keepAwakeDesired = false
+    private var powerSourceRunLoopSource: CFRunLoopSource?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
@@ -25,7 +31,93 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupMenu()
         updateIcon()
 
+        registerControlObserver()      // Control Center 토글 → 앱 수신
+        registerPowerSourceObserver()  // 전원(AC↔배터리) 변경 시 재적용
+        publishState()                 // 현재 상태를 컨트롤에 반영
+    }
 
+    /// 현재 AC 어댑터 전원인지 (배터리면 false).
+    private func onACPower() -> Bool {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let type = IOPSGetProvidingPowerSourceType(blob)?.takeUnretainedValue() as String?
+        else { return true }   // 데스크톱 등 판별 불가 시 AC로 간주
+        return type == kIOPMACPowerKey
+    }
+
+    /// 전원 소스 변경 알림 등록 — keep-awake가 켜져 있으면 새 전원에 맞게 재적용.
+    private func registerPowerSourceObserver() {
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        guard let src = IOPSNotificationCreateRunLoopSource({ ctx in
+            guard let ctx = ctx else { return }
+            let delegate = Unmanaged<AppDelegate>.fromOpaque(ctx).takeUnretainedValue()
+            DispatchQueue.main.async {
+                if delegate.keepAwakeDesired { delegate.applyKeepAwake(true) }
+            }
+        }, ctx)?.takeRetainedValue() else { return }
+        powerSourceRunLoopSource = src
+        CFRunLoopAddSource(CFRunLoopGetMain(), src, .defaultMode)
+    }
+
+    /// 전원에 맞는 방식으로 keep-awake 적용:
+    /// AC = caffeinate(부드럽게, 뚜껑 닫으면 잠), 배터리 = pmset disablesleep(뚜껑 닫아도 유지).
+    func applyKeepAwake(_ on: Bool) {
+        keepAwakeDesired = on
+        if on {
+            if onACPower() {
+                if clamshellMode.isOn { clamshellMode.set(false) }      // 배터리용 해제
+                if !sleepToggle.isDisableSleep { _ = sleepToggle.toggle() }
+            } else {
+                if sleepToggle.isDisableSleep { _ = sleepToggle.toggle() }  // AC용 해제
+                let r = clamshellMode.set(true)
+                if case .failed = r {                                    // sudoers 미설치 폴백
+                    if !sleepToggle.isDisableSleep { _ = sleepToggle.toggle() }
+                }
+            }
+        } else {
+            if sleepToggle.isDisableSleep { _ = sleepToggle.toggle() }
+            if clamshellMode.isOn { clamshellMode.set(false) }
+        }
+        updateMenu()
+    }
+
+    /// Control Widget이 보낸 Darwin "토글 요청"을 수신하도록 등록.
+    private func registerControlObserver() {
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let observer = Unmanaged.passUnretained(self).toOpaque()
+        CFNotificationCenterAddObserver(
+            center, observer,
+            { _, observer, _, _, _ in
+                guard let observer = observer else { return }
+                let delegate = Unmanaged<AppDelegate>.fromOpaque(observer).takeUnretainedValue()
+                DispatchQueue.main.async { delegate.handleControlToggleRequest() }
+            },
+            SteamPackShared.toggleRequestName,
+            nil,
+            .deliverImmediately)
+    }
+
+    /// 컨트롤이 기록한 "원하는 상태"에 실제 상태를 맞춘다.
+    /// 작업 후 publishState()가 실제 결과를 다시 컨트롤로 반영(자기 정정).
+    func handleControlToggleRequest() {
+        // perform()이 이미 새 desired 값을 파일에 기록함 → 그 값에 맞춰 실제 메커니즘 적용.
+        let desired = SteamPackShared.readKeepAwake()
+        cancelScheduledSleep()
+        applyKeepAwake(desired)
+    }
+
+    /// 현재 sleep 억제 상태를 App Group에 기록하고 Control Center 컨트롤을 새로고침.
+    func publishState() {
+        let keepAwake = sleepToggle.isDisableSleep || clamshellMode.isOn
+        keepAwakeDesired = keepAwake   // 메뉴 조작 포함 실제 상태와 동기화
+        SteamPackShared.writeKeepAwake(keepAwake)
+        ControlCenter.shared.reloadControls(ofKind: SteamPackShared.controlKind)
+        // macOS Tahoe에서 즉시 reload가 누락되는 경우 대비 — 짧은 지연 후 재호출
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            ControlCenter.shared.reloadControls(ofKind: SteamPackShared.controlKind)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            ControlCenter.shared.reloadControls(ofKind: SteamPackShared.controlKind)
+        }
     }
 
     private func setupMenu() {
@@ -120,6 +212,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         clamshellMenuItem.title = clamshellText()
         loginItemMenuItem.title = loginItemText()
         updateIcon()
+        publishState()  // Control Center 컨트롤 상태 동기화
     }
 
     private func statusText() -> String {

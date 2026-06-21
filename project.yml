@@ -1,0 +1,49 @@
+name: SteamPack
+options:
+  bundleIdPrefix: com.steampack
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: 6UF9Z668JW
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.4.0"
+    CURRENT_PROJECT_VERSION: "5"
+
+targets:
+  SteamPack:
+    type: application
+    platform: macOS
+    sources:
+      - src
+      - Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.steampack.app
+        PRODUCT_NAME: SteamPack
+        CODE_SIGN_ENTITLEMENTS: SteamPack.entitlements
+        INFOPLIST_FILE: AppInfo.plist
+        GENERATE_INFOPLIST_FILE: NO
+        LSUIElement: YES
+        ENABLE_HARDENED_RUNTIME: YES
+    dependencies:
+      - target: SteamPackControl
+        embed: true
+
+  SteamPackControl:
+    type: app-extension
+    platform: macOS
+    sources:
+      - Control
+      - Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.steampack.app.control
+        PRODUCT_NAME: SteamPackControl
+        CODE_SIGN_ENTITLEMENTS: SteamPackControl.entitlements
+        INFOPLIST_FILE: Control/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_HARDENED_RUNTIME: YES
