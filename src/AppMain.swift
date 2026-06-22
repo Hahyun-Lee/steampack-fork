@@ -33,11 +33,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// 계층형: Keep Awake = 마스터 '깨어있기', Clamshell = '뚜껑 닫아도' 하위 옵션.
     /// caffeinate=뚜껑 열림(AC·배터리), pmset disablesleep=뚜껑 닫아도.
 
+    /// 느린 sudo pmset 전에 "예상 표시 상태"를 먼저 기록+reload — 연동 토글 즉시 갱신.
+    /// 실제 적용 후 publishState가 실상태로 자기 정정.
+    private func optimisticDisplay(keepAwake: Bool, clamshell: Bool) {
+        SteamPackShared.writeKeepAwake(keepAwake)
+        SteamPackShared.writeClamshell(clamshell)
+        reloadBothControls()
+    }
+
     /// Keep Awake 토글 변경 수신 (마스터).
     func onKeepAwakeRequest() {
         let want = SteamPackShared.readKeepAwake()
+        let clamPref = SteamPackShared.readClamshell()      // 원래 clamshell 의도
+        optimisticDisplay(keepAwake: want, clamshell: want && clamPref)   // 즉시 표시
         if want {
-            if SteamPackShared.readClamshell() {           // 하위옵션 clamshell on → pmset
+            if clamPref {                                   // 하위옵션 clamshell on → pmset
                 if sleepToggle.isDisableSleep { _ = sleepToggle.toggle() }
                 if !clamshellMode.isOn { clamshellMode.set(true) }
             } else {                                        // caffeinate
@@ -54,6 +64,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Clamshell 토글 변경 수신 (하위 옵션, 켜면 마스터도 깨어있음).
     func onClamshellRequest() {
         let want = SteamPackShared.readClamshell()
+        optimisticDisplay(keepAwake: true, clamshell: want)  // 즉시 표시 (둘 다 결과적으로 깨어있음)
         if want {                                           // clamshell on → pmset (caffeinate 대체)
             if sleepToggle.isDisableSleep { _ = sleepToggle.toggle() }
             if !clamshellMode.isOn {
