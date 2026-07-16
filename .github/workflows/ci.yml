@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feature/control-center-toggle]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build and test without signing
+        run: |
+          xcodebuild \
+            -project SteamPack.xcodeproj \
+            -scheme SteamPack \
+            -configuration Debug \
+            -derivedDataPath /tmp/steampack-ci \
+            CODE_SIGNING_ALLOWED=NO \
+            test

@@ -2,265 +2,441 @@ import Cocoa
 import ServiceManagement
 import WidgetKit
 
-class AppDelegate: NSObject, NSApplicationDelegate {
-    var statusItem: NSStatusItem!
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private(set) var statusItem: NSStatusItem!
     let sleepToggle = SleepToggle()
     let clamshellMode = ClamshellMode()
+    let safetyMonitor = PowerSafetyMonitor()
 
-    // Menu items that need updating
     private var statusMenuItem: NSMenuItem!
     private var toggleMenuItem: NSMenuItem!
     private var clamshellMenuItem: NSMenuItem!
+    private var safetyMenuItem: NSMenuItem!
+    private var authorizationMenuItem: NSMenuItem!
     private var scheduledMenuItem: NSMenuItem!
     private var loginItemMenuItem: NSMenuItem!
 
-    // Scheduled sleep timer
     private var sleepTimer: Timer?
     private var timerEndDate: Date?
     private var countdownTimer: Timer?
+    private var heartbeatTimer: Timer?
+    private var lastSafetyEvent: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        ProcessInfo.processInfo.disableSuddenTermination()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         setupMenu()
-        updateIcon()
+        registerControlObservers()
+        configureSafety()
+        startHeartbeat()
 
-        registerControlObservers()  // Control Center 컨트롤 → 앱 수신 (토글별)
-        publishState()              // 현재 상태를 컨트롤에 반영
+        clamshellMode.onWatchdogFailure = { [weak self] in
+            self?.lastSafetyEvent = "Watchdog stopped — normal sleep restored"
+            PowerSafetyNotifier.notifyWatchdogFailure()
+            self?.updateMenu()
+        }
+
+        safetyMonitor.start()
+        updateMenu()
     }
 
-    /// 계층형: Keep Awake = 마스터 '깨어있기', Clamshell = '뚜껑 닫아도' 하위 옵션.
-    /// caffeinate=뚜껑 열림(AC·배터리), pmset disablesleep=뚜껑 닫아도.
+    // MARK: - Control Center
 
-    /// 느린 sudo pmset 전에 "예상 표시 상태"를 먼저 기록+reload — 연동 토글 즉시 갱신.
-    /// 실제 적용 후 publishState가 실상태로 자기 정정.
-    private func optimisticDisplay(keepAwake: Bool, clamshell: Bool) {
-        SteamPackShared.writeKeepAwake(keepAwake)
-        SteamPackShared.writeClamshell(clamshell)
-        reloadBothControls()
-    }
-
-    /// Keep Awake 토글 변경 수신 (마스터).
     func onKeepAwakeRequest() {
-        let want = SteamPackShared.readKeepAwake()
-        let clamPref = SteamPackShared.readClamshell()      // 원래 clamshell 의도
-        optimisticDisplay(keepAwake: want, clamshell: want && clamPref)   // 즉시 표시
-        if want {
-            if clamPref {                                   // 하위옵션 clamshell on → pmset
-                if sleepToggle.isDisableSleep { _ = sleepToggle.toggle() }
-                if !clamshellMode.isOn { clamshellMode.set(true) }
-            } else {                                        // caffeinate
-                if clamshellMode.isOn { clamshellMode.set(false) }
-                if !sleepToggle.isDisableSleep { _ = sleepToggle.toggle() }
-            }
-        } else {                                            // 마스터 off → 전부 해제
-            if sleepToggle.isDisableSleep { _ = sleepToggle.toggle() }
-            if clamshellMode.isOn { clamshellMode.set(false) }
-        }
-        updateMenu()
-    }
-
-    /// Clamshell 토글 변경 수신 (하위 옵션, 켜면 마스터도 깨어있음).
-    func onClamshellRequest() {
-        let want = SteamPackShared.readClamshell()
-        optimisticDisplay(keepAwake: true, clamshell: want)  // 즉시 표시 (둘 다 결과적으로 깨어있음)
-        if want {                                           // clamshell on → pmset (caffeinate 대체)
-            if sleepToggle.isDisableSleep { _ = sleepToggle.toggle() }
-            if !clamshellMode.isOn {
-                let r = clamshellMode.set(true)
-                if case .failed = r {                       // sudoers 미설치 폴백 → caffeinate
-                    if !sleepToggle.isDisableSleep { _ = sleepToggle.toggle() }
+        let requested = SteamPackShared.readRequestedKeepAwake()
+        if requested {
+            let wantsClamshell = SteamPackShared.readRequestedClamshell()
+            if wantsClamshell {
+                switch enableClamshell() {
+                case .success:
+                    break
+                case .failed(let message):
+                    PowerSafetyNotifier.notifyControlFailure(message)
                 }
+            } else if !sleepToggle.isDisableSleep {
+                _ = sleepToggle.toggle()
             }
-        } else {                                            // clamshell off → 계속 깨어있도록 caffeinate로 전환
-            if clamshellMode.isOn { clamshellMode.set(false) }
-            if !sleepToggle.isDisableSleep { _ = sleepToggle.toggle() }
+        } else {
+            stopAllKeepAwakeModes()
         }
         updateMenu()
     }
 
-    /// 두 토글 각각의 Darwin 알림을 수신 등록.
+    func onClamshellRequest() {
+        let requested = SteamPackShared.readRequestedClamshell()
+        if requested {
+            switch enableClamshell() {
+            case .success:
+                break
+            case .failed(let message):
+                PowerSafetyNotifier.notifyControlFailure(message)
+            }
+        } else {
+            let result = clamshellMode.set(false)
+            if case .success = result, !sleepToggle.isDisableSleep {
+                _ = sleepToggle.toggle()
+            }
+        }
+        updateMenu()
+    }
+
     private func registerControlObservers() {
         let center = CFNotificationCenterGetDarwinNotifyCenter()
         let observer = Unmanaged.passUnretained(self).toOpaque()
-        CFNotificationCenterAddObserver(center, observer,
-            { _, obs, _, _, _ in
-                guard let obs = obs else { return }
-                let d = Unmanaged<AppDelegate>.fromOpaque(obs).takeUnretainedValue()
-                DispatchQueue.main.async { d.onKeepAwakeRequest() }
-            }, SteamPackShared.keepAwakeRequestName, nil, .deliverImmediately)
-        CFNotificationCenterAddObserver(center, observer,
-            { _, obs, _, _, _ in
-                guard let obs = obs else { return }
-                let d = Unmanaged<AppDelegate>.fromOpaque(obs).takeUnretainedValue()
-                DispatchQueue.main.async { d.onClamshellRequest() }
-            }, SteamPackShared.clamshellRequestName, nil, .deliverImmediately)
+        CFNotificationCenterAddObserver(
+            center,
+            observer,
+            { _, observer, _, _, _ in
+                guard let observer else { return }
+                let delegate = Unmanaged<AppDelegate>.fromOpaque(observer).takeUnretainedValue()
+                DispatchQueue.main.async { delegate.onKeepAwakeRequest() }
+            },
+            SteamPackShared.keepAwakeRequestName,
+            nil,
+            .deliverImmediately
+        )
+        CFNotificationCenterAddObserver(
+            center,
+            observer,
+            { _, observer, _, _, _ in
+                guard let observer else { return }
+                let delegate = Unmanaged<AppDelegate>.fromOpaque(observer).takeUnretainedValue()
+                DispatchQueue.main.async { delegate.onClamshellRequest() }
+            },
+            SteamPackShared.clamshellRequestName,
+            nil,
+            .deliverImmediately
+        )
     }
 
-    private func reloadBothControls() {
+    private func startHeartbeat() {
+        SteamPackShared.publishHeartbeat()
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            SteamPackShared.publishHeartbeat()
+        }
+    }
+
+    private func publishState() {
+        SteamPackShared.publishApplied(
+            keepAwake: sleepToggle.isDisableSleep || clamshellMode.isOn,
+            clamshell: clamshellMode.isOn
+        )
         ControlCenter.shared.reloadControls(ofKind: SteamPackShared.keepAwakeKind)
         ControlCenter.shared.reloadControls(ofKind: SteamPackShared.clamshellKind)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            ControlCenter.shared.reloadControls(ofKind: SteamPackShared.keepAwakeKind)
+            ControlCenter.shared.reloadControls(ofKind: SteamPackShared.clamshellKind)
+        }
     }
 
-    /// 파생 상태를 컨트롤에 기록 + 새로고침.
-    /// Keep Awake 표시 = (caffeinate OR clamshell) [마스터], Clamshell 표시 = clamshell.
-    func publishState() {
-        SteamPackShared.writeKeepAwake(sleepToggle.isDisableSleep || clamshellMode.isOn)
-        SteamPackShared.writeClamshell(clamshellMode.isOn)
-        reloadBothControls()
-        // macOS Tahoe에서 즉시 reload 누락 대비 — 짧은 지연 후 재호출
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.reloadBothControls() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.reloadBothControls() }
+    // MARK: - Safety
+
+    private func configureSafety() {
+        safetyMonitor.onUpdate = { [weak self] _ in
+            self?.updateSafetyMenuItem()
+        }
+        safetyMonitor.onUnsafe = { [weak self] issue in
+            guard let self, self.clamshellMode.isOn else { return }
+            let result = self.clamshellMode.set(false)
+            guard case .success = result else { return }
+            self.lastSafetyEvent = "Safety restored sleep — \(issue.description)"
+            PowerSafetyNotifier.notifyAutomaticDisarm(issue)
+            self.updateMenu()
+        }
     }
+
+    private func enableClamshell() -> ClamshellMode.ToggleResult {
+        safetyMonitor.refresh()
+        if let issue = PowerSafetyPolicy.issue(for: safetyMonitor.snapshot) {
+            return .failed("Clamshell Mode was blocked for safety. \(issue.description).")
+        }
+
+        PowerSafetyNotifier.prepare()
+        let result = clamshellMode.set(true)
+        if case .success = result, sleepToggle.isDisableSleep {
+            _ = sleepToggle.toggle()
+        }
+        return result
+    }
+
+    private func stopAllKeepAwakeModes() {
+        if sleepToggle.isDisableSleep {
+            _ = sleepToggle.toggle()
+        }
+        if clamshellMode.isOn {
+            _ = clamshellMode.set(false)
+        }
+    }
+
+    // MARK: - Menu
 
     private func setupMenu() {
         let menu = NSMenu()
 
-        statusMenuItem = NSMenuItem(title: statusText(), action: nil, keyEquivalent: "")
+        statusMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
+        menu.addItem(.separator())
 
-        menu.addItem(NSMenuItem.separator())
-
-        toggleMenuItem = NSMenuItem(title: toggleText(), action: #selector(toggleSleep), keyEquivalent: "t")
+        toggleMenuItem = NSMenuItem(
+            title: "",
+            action: #selector(toggleKeepAwake),
+            keyEquivalent: "t"
+        )
         toggleMenuItem.target = self
         menu.addItem(toggleMenuItem)
 
-        clamshellMenuItem = NSMenuItem(title: clamshellText(), action: #selector(toggleClamshell), keyEquivalent: "c")
+        clamshellMenuItem = NSMenuItem(
+            title: "",
+            action: #selector(toggleClamshell),
+            keyEquivalent: "c"
+        )
         clamshellMenuItem.target = self
         menu.addItem(clamshellMenuItem)
 
-        // Scheduled sleep submenu
-        scheduledMenuItem = NSMenuItem(title: "Scheduled Sleep", action: nil, keyEquivalent: "")
-        let scheduledSubmenu = NSMenu()
+        safetyMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        safetyMenuItem.isEnabled = false
+        menu.addItem(safetyMenuItem)
+
+        authorizationMenuItem = NSMenuItem(
+            title: "",
+            action: #selector(toggleClamshellAuthorization),
+            keyEquivalent: ""
+        )
+        authorizationMenuItem.target = self
+        menu.addItem(authorizationMenuItem)
+
+        menu.addItem(.separator())
+        setupScheduleMenu(in: menu)
+        menu.addItem(.separator())
+
+        loginItemMenuItem = NSMenuItem(
+            title: "",
+            action: #selector(toggleLoginItem),
+            keyEquivalent: ""
+        )
+        loginItemMenuItem.target = self
+        menu.addItem(loginItemMenuItem)
+
+        let quitItem = NSMenuItem(title: "Quit & Restore Sleep", action: #selector(quitApp), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        menu.delegate = self
+        statusItem.menu = menu
+    }
+
+    private func setupScheduleMenu(in menu: NSMenu) {
+        scheduledMenuItem = NSMenuItem(title: "Auto-Off Timer", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
         let durations: [(String, TimeInterval)] = [
             ("10 Minutes", 10 * 60),
             ("30 Minutes", 30 * 60),
             ("1 Hour", 60 * 60),
             ("2 Hours", 2 * 60 * 60),
-            ("4 Hours", 4 * 60 * 60),
+            ("4 Hours", 4 * 60 * 60)
         ]
         for (title, seconds) in durations {
             let item = NSMenuItem(title: title, action: #selector(scheduleSleep(_:)), keyEquivalent: "")
             item.target = self
             item.tag = Int(seconds)
-            scheduledSubmenu.addItem(item)
+            submenu.addItem(item)
         }
-        scheduledSubmenu.addItem(NSMenuItem.separator())
-        let cancelItem = NSMenuItem(title: "Cancel Timer", action: #selector(cancelScheduledSleep), keyEquivalent: "")
-        cancelItem.target = self
-        scheduledSubmenu.addItem(cancelItem)
-        scheduledMenuItem.submenu = scheduledSubmenu
+        submenu.addItem(.separator())
+        let cancel = NSMenuItem(title: "Cancel Timer", action: #selector(cancelScheduledSleep), keyEquivalent: "")
+        cancel.target = self
+        submenu.addItem(cancel)
+        scheduledMenuItem.submenu = submenu
         menu.addItem(scheduledMenuItem)
+    }
 
-        menu.addItem(NSMenuItem.separator())
+    private func updateMenu() {
+        sleepToggle.refresh()
+        clamshellMode.refresh()
+        statusMenuItem.title = statusText()
+        toggleMenuItem.title = keepAwakeText()
+        clamshellMenuItem.title = clamshellText()
+        clamshellMenuItem.isEnabled = !clamshellMode.isExternallyDisabled
+        authorizationMenuItem.title = clamshellMode.isAuthorized
+            ? "Remove Clamshell Permission…"
+            : "Install Clamshell Permission…"
+        loginItemMenuItem.title = isLoginItemEnabled ? "✓ Start at Login" : "  Start at Login"
+        updateSafetyMenuItem()
+        updateIcon()
+        publishState()
+    }
 
-        loginItemMenuItem = NSMenuItem(title: loginItemText(), action: #selector(toggleLoginItem), keyEquivalent: "")
-        loginItemMenuItem.target = self
-        menu.addItem(loginItemMenuItem)
+    private func updateSafetyMenuItem() {
+        guard safetyMenuItem != nil else { return }
+        if let lastSafetyEvent {
+            safetyMenuItem.title = "⚠ \(lastSafetyEvent)"
+            return
+        }
 
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
-        quitItem.target = self
-        menu.addItem(quitItem)
+        let snapshot = safetyMonitor.snapshot
+        let power: String
+        if snapshot.isOnACPower {
+            power = "AC power"
+        } else if let percent = snapshot.batteryPercent {
+            power = "Battery \(percent)%"
+        } else {
+            power = "Battery"
+        }
+        let temperature: String
+        switch snapshot.thermalState {
+        case .nominal: temperature = "temperature normal"
+        case .fair: temperature = "temperature elevated"
+        case .serious, .critical: temperature = "temperature high"
+        @unknown default: temperature = "temperature unknown"
+        }
+        safetyMenuItem.title = "Safety: \(power) · \(temperature) · auto-off at 20%"
+    }
 
-        menu.delegate = self  // 메뉴 열 때마다 caffeinate 생존 상태 재동기화
-        statusItem.menu = menu
+    private func statusText() -> String {
+        if let endDate = timerEndDate {
+            let remaining = max(0, Int(endDate.timeIntervalSinceNow))
+            return "Auto-off in \(formatDuration(remaining))"
+        }
+        if clamshellMode.isOn { return "Clamshell Mode — crash guard armed" }
+        if clamshellMode.isExternallyDisabled { return "Sleep is disabled by another app or command" }
+        return sleepToggle.isDisableSleep ? "Keep Awake — lid open" : "Normal Sleep"
+    }
+
+    private func keepAwakeText() -> String {
+        (sleepToggle.isDisableSleep || clamshellMode.isOn) ? "Turn Keep Awake Off" : "Turn Keep Awake On"
+    }
+
+    private func clamshellText() -> String {
+        clamshellMode.isOn ? "✓ Clamshell Mode (Closed Lid)" : "  Clamshell Mode (Closed Lid)"
     }
 
     private func updateIcon() {
-        let name: String
-        if sleepTimer != nil {
-            name = "hourglass.badge.eye"
+        let symbol: String
+        if lastSafetyEvent != nil {
+            symbol = "exclamationmark.triangle.fill"
+        } else if sleepTimer != nil {
+            symbol = "hourglass.badge.eye"
         } else if clamshellMode.isOn {
-            name = "laptopcomputer"
+            symbol = "laptopcomputer"
         } else if sleepToggle.isDisableSleep {
-            name = "eye.fill"
+            symbol = "eye.fill"
         } else {
-            name = "eye.half.closed.fill"
+            symbol = "eye.half.closed.fill"
         }
-        if let image = NSImage(systemSymbolName: name, accessibilityDescription: "Sleep Toggle") {
+        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: statusText()) {
             image.isTemplate = true
             statusItem.button?.image = image
         }
 
-        // Show countdown next to icon
         if let endDate = timerEndDate {
-            let remaining = max(0, Int(endDate.timeIntervalSinceNow))
-            let hours = remaining / 3600
-            let minutes = (remaining % 3600) / 60
-            let seconds = remaining % 60
-            if hours > 0 {
-                statusItem.button?.title = String(format: " %d:%02d:%02d", hours, minutes, seconds)
-            } else {
-                statusItem.button?.title = String(format: " %02d:%02d", minutes, seconds)
-            }
+            statusItem.button?.title = " " + formatDuration(max(0, Int(endDate.timeIntervalSinceNow)))
         } else {
             statusItem.button?.title = ""
         }
     }
 
-    private func updateMenu() {
-        statusMenuItem.title = statusText()
-        toggleMenuItem.title = toggleText()
-        clamshellMenuItem.title = clamshellText()
-        loginItemMenuItem.title = loginItemText()
-        updateIcon()
-        publishState()  // Control Center 컨트롤 상태 동기화
+    private func formatDuration(_ seconds: Int) -> String {
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        let seconds = seconds % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
+            : String(format: "%02d:%02d", minutes, seconds)
     }
 
-    private func statusText() -> String {
-        if let endDate = timerEndDate {
-            let remaining = max(0, endDate.timeIntervalSinceNow)
-            let hours = Int(remaining) / 3600
-            let minutes = (Int(remaining) % 3600) / 60
-            if hours > 0 {
-                return "Sleep in \(hours)h \(minutes)m"
-            } else {
-                return "Sleep in \(minutes)m"
-            }
+    // MARK: - Actions
+
+    @objc private func toggleKeepAwake() {
+        lastSafetyEvent = nil
+        cancelTimerWithoutUpdating()
+        if sleepToggle.isDisableSleep || clamshellMode.isOn {
+            stopAllKeepAwakeModes()
+        } else {
+            _ = sleepToggle.toggle()
         }
-        if clamshellMode.isOn {
-            return "Clamshell Mode — Sleep Off"
-        }
-        return sleepToggle.isDisableSleep ? "Sleep Disabled" : "Sleep Enabled"
-    }
-
-    private func toggleText() -> String {
-        sleepToggle.isDisableSleep ? "Enable Sleep" : "Disable Sleep"
-    }
-
-    private func clamshellText() -> String {
-        clamshellMode.isOn ? "✓ Clamshell Mode (Battery)" : "  Clamshell Mode (Battery)"
+        updateMenu()
     }
 
     @objc private func toggleClamshell() {
-        let result = clamshellMode.toggle()
-        switch result {
-        case .success:
-            updateMenu()
-        case .failed(let message):
-            let alert = NSAlert()
-            alert.messageText = "Clamshell Mode"
-            alert.informativeText = """
-            sudo 권한이 필요합니다. 터미널에서 1회 실행:
-
-            ~/steampack-fork/scripts/install-sudoers.sh
-
-            (\(message))
-            """
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "확인")
-            alert.runModal()
+        lastSafetyEvent = nil
+        cancelTimerWithoutUpdating()
+        let result = clamshellMode.isOn ? clamshellMode.set(false) : enableClamshell()
+        if case .failed(let message) = result {
+            showAlert(title: "Clamshell Mode", message: message)
         }
+        updateMenu()
+    }
+
+    @objc private func toggleClamshellAuthorization() {
+        if clamshellMode.isAuthorized {
+            if clamshellMode.isOn, case .failed(let message) = clamshellMode.set(false) {
+                showAlert(title: "Clamshell Permission", message: message)
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = "Remove Clamshell permission?"
+            alert.informativeText = "Keep Awake will continue to work, but closed-lid mode will be unavailable."
+            alert.addButton(withTitle: "Remove")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            if case .failure(let error) = ClamshellAuthorization.remove() {
+                showAlert(title: "Clamshell Permission", message: error.localizedDescription)
+            }
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Install restricted Clamshell permission?"
+            alert.informativeText = "SteamPack will ask macOS once for administrator approval. The installed rule permits only the two exact pmset commands that turn closed-lid sleep prevention on and off."
+            alert.addButton(withTitle: "Install")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            if case .failure(let error) = ClamshellAuthorization.install() {
+                showAlert(title: "Clamshell Permission", message: error.localizedDescription)
+            }
+        }
+        updateMenu()
+    }
+
+    @objc private func scheduleSleep(_ sender: NSMenuItem) {
+        lastSafetyEvent = nil
+        if !sleepToggle.isDisableSleep && !clamshellMode.isOn {
+            guard case .success = sleepToggle.toggle() else { return }
+        }
+        cancelTimerWithoutUpdating()
+
+        let seconds = TimeInterval(sender.tag)
+        timerEndDate = Date().addingTimeInterval(seconds)
+        sleepTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            self?.timerFired()
+        }
+        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.updateIcon()
+        }
+        updateMenu()
+    }
+
+    @objc private func cancelScheduledSleep() {
+        cancelTimerWithoutUpdating()
+        updateMenu()
+    }
+
+    private func cancelTimerWithoutUpdating() {
+        sleepTimer?.invalidate()
+        sleepTimer = nil
+        countdownTimer?.invalidate()
+        countdownTimer = nil
+        timerEndDate = nil
+    }
+
+    private func timerFired() {
+        cancelTimerWithoutUpdating()
+        stopAllKeepAwakeModes()
+        updateMenu()
     }
 
     private var isLoginItemEnabled: Bool {
         SMAppService.mainApp.status == .enabled
-    }
-
-    private func loginItemText() -> String {
-        isLoginItemEnabled ? "✓ Start at Login" : "  Start at Login"
     }
 
     @objc private func toggleLoginItem() {
@@ -271,84 +447,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 try SMAppService.mainApp.register()
             }
         } catch {
-            let alert = NSAlert()
-            alert.messageText = "Login Item"
-            alert.informativeText = "Failed to update login item: \(error.localizedDescription)"
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
+            showAlert(title: "Start at Login", message: error.localizedDescription)
         }
         updateMenu()
     }
 
-    @objc private func scheduleSleep(_ sender: NSMenuItem) {
-        let seconds = TimeInterval(sender.tag)
-
-        // If sleep is currently enabled, disable it first
-        if !sleepToggle.isDisableSleep {
-            let result = sleepToggle.toggle()
-            if case .failed = result { return }
-        }
-
-        // Cancel any existing timer
-        sleepTimer?.invalidate()
-        countdownTimer?.invalidate()
-
-        // Set the end date and start timers
-        timerEndDate = Date().addingTimeInterval(seconds)
-
-        sleepTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
-            self?.timerFired()
-        }
-
-        // Update the countdown display every second
-        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.updateIcon()
-        }
-
-        updateMenu()
-    }
-
-    @objc private func cancelScheduledSleep() {
-        sleepTimer?.invalidate()
-        sleepTimer = nil
-        countdownTimer?.invalidate()
-        countdownTimer = nil
-        timerEndDate = nil
-        updateMenu()
-    }
-
-    private func timerFired() {
-        sleepTimer = nil
-        countdownTimer?.invalidate()
-        countdownTimer = nil
-        timerEndDate = nil
-
-        // Re-enable sleep
-        if sleepToggle.isDisableSleep {
-            _ = sleepToggle.toggle()
-        }
-        // Clamshell Mode도 타이머 만료 시 함께 해제 (끄는 걸 잊는 리스크 방지)
-        if clamshellMode.isOn {
-            clamshellMode.set(false)
-        }
-        updateMenu()
-    }
-
-    @objc private func toggleSleep() {
-        let result = sleepToggle.toggle()
-        switch result {
-        case .success:
-            cancelScheduledSleep()
-            updateMenu()
-        case .failed(let message):
-            let alert = NSAlert()
-            alert.messageText = "Error"
-            alert.informativeText = "caffeinate failed: \(message)"
-            alert.alertStyle = .critical
-            alert.addButton(withTitle: "확인")
-            alert.runModal()
-        }
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc private func quitApp() {
@@ -356,21 +466,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // 앱 종료 시 자식 caffeinate 정리 — 고아 프로세스가 보이지 않게 sleep을 계속 막는 것 방지
-        if sleepToggle.isDisableSleep {
-            _ = sleepToggle.toggle()
-        }
-        // 커널 disablesleep도 원복 — 앱이 없으면 끌 수단이 사라지므로 반드시 해제
-        if clamshellMode.isOn {
-            clamshellMode.set(false)
-        }
+        heartbeatTimer?.invalidate()
+        safetyMonitor.stop()
+        cancelTimerWithoutUpdating()
+        stopAllKeepAwakeModes()
+        SteamPackShared.publishApplied(keepAwake: false, clamshell: false)
+        SteamPackShared.clearHeartbeat()
+        ProcessInfo.processInfo.enableSuddenTermination()
     }
 }
 
 extension AppDelegate: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
-        sleepToggle.refresh()
-        clamshellMode.refresh()
+        lastSafetyEvent = nil
+        safetyMonitor.refresh()
         updateMenu()
     }
 }
@@ -378,6 +487,8 @@ extension AppDelegate: NSMenuDelegate {
 @main
 enum Main {
     static func main() {
+        if ClamshellWatchdog.runIfRequested() { return }
+
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

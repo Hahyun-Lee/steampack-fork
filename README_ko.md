@@ -8,160 +8,96 @@
 
 # SteamPack
 
-<img src="capture.jpg" width="600" alt="SteamPack 스크린샷"/>
-
-**클릭 한 번으로 Mac의 잠자기를 방지합니다.**
-
-[![MIT License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
-[![macOS](https://img.shields.io/badge/macOS-13%2B-000000?style=for-the-badge&logo=apple&logoColor=white)](https://www.apple.com/macos/)
-[![Swift](https://img.shields.io/badge/Swift-F05138?style=for-the-badge&logo=swift&logoColor=white)](https://swift.org)
-[![Build](https://img.shields.io/badge/build-swiftc-lightgrey?style=for-the-badge)](scripts/build.sh)
-
-*토글 · 저장 · 잊기 — 메뉴바에서 잠자기 제어.*
-
-[시작하기](#-시작하기) · [동작 원리](#-동작-원리) · [사용법](#-사용법) · [빌드](#-소스에서-빌드) · [아키텍처](#-아키텍처)
+**macOS Tahoe용 네이티브 Keep Awake·닫힌 덮개 컨트롤**
 
 </div>
 
----
+SteamPack은 메뉴 막대와 macOS 제어 센터에서 사용할 수 있는 두 개의 연동 토글을 제공합니다.
 
-## 이게 뭔가요?
+- **Keep Awake**: 덮개를 연 상태에서 유휴·화면·디스크 잠자기를 방지합니다.
+- **Clamshell Mode**: 배터리 사용 중에도 덮개를 닫은 채 작업을 계속합니다.
 
-SteamPack은 Mac의 잠자기 모드를 클릭 한 번으로 토글하는 **경량 macOS 메뉴바 유틸리티**입니다. 내부적으로 `pmset -a disablesleep` 명령어를 실행합니다. 더 이상 터미널에서 긴 명령어를 입력할 필요가 없습니다.
+Clamshell은 Keep Awake의 하위 옵션입니다. Clamshell을 켜면 Keep Awake도 켜지고, Keep Awake를 끄면 모든 잠자기 방지가 해제됩니다. 두 컨트롤 모두 제어 센터 또는 메뉴 막대에 직접 배치할 수 있습니다.
 
-> **왜 "SteamPack"?** — 증기 제트팩처럼 계속 날게 해주듯, SteamPack은 Mac이 잠들지 않고 계속 달리게 합니다.
+> **공개 프리뷰:** 현재는 소스 빌드용입니다. Developer ID 서명과 Apple 공증이 준비된 뒤에만 DMG를 배포합니다. 서명되지 않은 공개 바이너리는 의도적으로 제공하지 않습니다.
 
----
+## 안전 설계
 
-## ✨ 주요 기능
+닫힌 덮개 상태는 발열과 배터리 소모를 일으킬 수 있으므로 다음 보호 장치를 기본 적용합니다.
 
-- **원클릭 토글** — 메뉴바에서 잠자기 모드 켜고 끄기
-- **예약 잠자기** — 10분 / 30분 / 1시간 / 2시간 / 4시간 후 자동으로 잠자기 복귀
-- **실시간 카운트다운** — 남은 시간이 메뉴바에 표시
-- **로그인 시 자동 실행** — 로그인 시 자동으로 시작하는 옵션
-- **안전한 비밀번호 저장** — sudo 비밀번호를 macOS Keychain에 저장
-- **제로 풋프린트** — 도크 아이콘 없음, 창 없음, 메뉴바 아이콘만
-- **Universal Binary** — Apple Silicon과 Intel 네이티브 지원
-- **의존성 없음** — 순수 AppKit, 서드파티 라이브러리 불필요
+- **강제 종료 복구:** Clamshell 세션마다 별도 watchdog이 붙습니다. 앱 crash·SIGKILL 시에도 정상 잠자기를 복구합니다.
+- **세션 소유권:** 이전 watchdog이 새 세션을 끌 수 없으며, 다른 앱이 만든 `SleepDisabled` 상태를 SteamPack 상태로 오인하지 않습니다.
+- **배터리 보호:** 배터리 사용 중 20%가 되면 Clamshell을 자동 해제합니다.
+- **온도 보호:** macOS thermal state가 serious 또는 critical이면 즉시 해제합니다.
+- **타이머·종료 복구:** 타이머 만료와 **Quit & Restore Sleep** 시 정상 잠자기로 돌아갑니다.
+- **정직한 제어 센터 상태:** 요청값이 아니라 실제 적용값만 표시하며, 메뉴 막대 앱이 죽어 있으면 컨트롤은 자동으로 OFF를 표시합니다.
+- **최소 권한:** 관리자 승인은 아래 두 명령만 비밀번호 없이 허용합니다.
 
----
+```text
+/usr/bin/pmset disablesleep 1
+/usr/bin/pmset disablesleep 0
+```
 
-## 🚀 시작하기
+관리자 비밀번호는 저장하지 않습니다. Clamshell 권한은 앱 메뉴에서 언제든 제거할 수 있습니다.
 
-### DMG 다운로드
+## 요구 사항
 
-1. [Releases](../../releases)에서 `SteamPack.dmg` 다운로드
-2. DMG 열기 → **SteamPack**을 **Applications**로 드래그
-3. SteamPack 실행
+- macOS Tahoe 26.0 이상
+- 소스 빌드 시 Xcode 26, [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+- 제어 센터 컨트롤 렌더링을 위한 무료 Apple Development 팀
 
-### 소스에서 빌드
+## 빌드
 
 ```bash
-git clone https://github.com/tykimos/steampack.git
-cd steampack
-bash scripts/build.sh
+git clone https://github.com/Hahyun-Lee/steampack-fork.git
+cd steampack-fork
+brew install xcodegen
+xcodegen generate
+DEVELOPMENT_TEAM=YOUR_TEAM_ID scripts/build.sh
 open build/SteamPack.app
 ```
 
-> **요구사항:** Xcode Command Line Tools (`xcode-select --install`)
+또는 `SteamPack.xcodeproj`를 Xcode에서 열고 두 앱 target에 개발 팀을 선택한 뒤 `SteamPack` scheme을 실행합니다.
 
----
+Clamshell을 처음 사용할 때 **Install Clamshell Permission…**을 선택하면 macOS가 관리자 승인을 한 번 요청합니다. 일반 Keep Awake에는 이 권한이 필요하지 않습니다.
 
-## 👁 사용법
+## 제어 센터에 추가
 
-| 단계 | 동작 |
-|------|------|
-| **실행** | 메뉴바에 눈 모양 아이콘 표시 |
-| **첫 실행** | sudo 비밀번호 입력 (Keychain에 저장) |
-| **토글** | 아이콘 클릭 → **Disable Sleep** / **Enable Sleep** |
-| **비밀번호 변경** | 아이콘 클릭 → **Change Password** |
-| **종료** | 아이콘 클릭 → **Quit** (`⌘Q`) |
+1. macOS 제어 센터에서 **컨트롤 편집**을 엽니다.
+2. **SteamPack Keep Awake**와 **SteamPack Clamshell**을 추가합니다.
+3. 필요하면 각 컨트롤을 메뉴 막대에 고정합니다.
 
-### 메뉴바 아이콘
+## 테스트
 
-| 아이콘 | 상태 | 의미 |
-|--------|------|------|
-| `eye.half.closed.fill` | 일반 | 잠자기 **허용** — Mac이 정상적으로 잠들 수 있음 |
-| `eye.fill` | 활성 | 잠자기 **차단** — Mac이 깨어 있음 |
-| `hourglass.badge.eye` + 카운트다운 | 타이머 | 설정 시간 동안 잠자기 차단 — `MM:SS` 형태로 표시 |
-
-<img src="timer.jpg" width="600" alt="예약 잠자기 타이머"/>
-
----
-
-## ⚙️ 동작 원리
-
-SteamPack은 macOS Keychain에 저장된 비밀번호로 `sudo pmset -a disablesleep 1` (차단) 또는 `0` (허용) 명령어를 실행합니다.
-
-```mermaid
-flowchart TB
-    subgraph MenuBar["macOS 메뉴바"]
-        ICON["👁 SteamPack 아이콘"]
-    end
-
-    subgraph Menu["드롭다운 메뉴"]
-        STATUS["Sleep Enabled / Disabled"]
-        TOGGLE["Disable Sleep ⌘T"]
-        CHANGEPW["Change Password"]
-        QUIT["Quit ⌘Q"]
-    end
-
-    subgraph Security["보안 레이어"]
-        KEYCHAIN["🔑 macOS Keychain\n(sudo 비밀번호)"]
-    end
-
-    subgraph System["macOS 시스템"]
-        PMSET["sudo pmset -a disablesleep 1/0"]
-    end
-
-    ICON -->|클릭| Menu
-    TOGGLE --> KEYCHAIN
-    KEYCHAIN -->|"stdin 파이프"| PMSET
-    PMSET -->|"상태 변경"| STATUS
-
-    style MenuBar fill:#e8f4fd,stroke:#2196F3,color:#1565C0
-    style Menu fill:#fff3e0,stroke:#FF9800,color:#E65100
-    style Security fill:#e8f5e9,stroke:#4CAF50,color:#2E7D32
-    style System fill:#fce4ec,stroke:#E91E63,color:#880E4F
+```bash
+xcodegen generate
+xcodebuild \
+  -project SteamPack.xcodeproj \
+  -scheme SteamPack \
+  -derivedDataPath /tmp/steampack-tests \
+  CODE_SIGNING_ALLOWED=NO \
+  test
 ```
 
----
+배터리·온도 정책, watchdog 세션 소유권과 race, 제어 센터 heartbeat 및 실제 상태 동기화를 검증합니다.
 
-## 🏗 아키텍처
+빌드와 Clamshell 권한 설치 후 아래 통합 검증을 선택적으로 실행할 수 있습니다. `SleepDisabled`를 잠깐 변경하고 앱 crash와 같은 watchdog 연결 종료를 만든 다음 정상 잠자기 복구를 확인합니다. 이미 잠자기가 비활성화된 상태에서는 실행을 거부합니다.
 
-```
-steampack/
-├── src/
-│   ├── AppMain.swift          # 앱 진입점, NSStatusItem 메뉴바
-│   ├── SleepToggle.swift      # pmset 실행 및 상태 감지
-│   ├── KeychainHelper.swift   # Keychain Services 래퍼
-│   └── PasswordPrompt.swift   # 비밀번호 입력 다이얼로그
-├── scripts/
-│   ├── build.sh               # 빌드 자동화 (swiftc)
-│   └── create-dmg.sh          # DMG 패키징 (hdiutil)
-├── AppInfo.plist              # 앱 번들 설정
-├── capture.jpg                # 스크린샷
-├── README.md                  # English
-└── README_ko.md               # 한국어
+```bash
+scripts/verify-crash-recovery.sh
 ```
 
----
+## 한계와 주의
 
-## 🔒 보안
+- `pmset disablesleep`은 문서화되지 않은 macOS 동작이므로 향후 바뀔 수 있습니다.
+- 보호 장치가 있어도 고부하 작업 중인 MacBook을 닫아 가방에 넣는 행동이 안전해지는 것은 아닙니다. 통풍을 확보해야 합니다.
+- 제어 센터 동작에는 메뉴 막대 앱이 실행 중이어야 합니다.
+- 동일한 전역 `SleepDisabled` 값을 바꾸는 다른 도구와는 안전하게 소유권을 공유할 수 없습니다. SteamPack은 외부 상태를 감지하면 이를 차지하지 않습니다.
 
-- 비밀번호는 **macOS Keychain**에만 저장 (`com.steampack.sudo`)
-- 비밀번호는 **stdin 파이프**로 sudo에 전달 — 프로세스 목록에 노출 안됨
-- 인증 실패 시 비밀번호 재입력 요청
-- Ad-hoc 코드 서명
+## 개인정보·보안
 
----
+텔레메트리, 분석, 계정, 네트워크 요청, 비밀번호 저장이 없습니다. 자세한 내용은 [PRIVACY.md](PRIVACY.md)와 [SECURITY.md](SECURITY.md)를 참고하세요.
 
-## 📄 라이선스
+## 원작 표시
 
-MIT License — 자세한 내용은 [LICENSE](LICENSE)를 참조하세요.
-
-<div align="center">
-
-*Built with ❤️ and [Claude Code](https://claude.ai/code)*
-
-</div>
+SteamPack은 MIT 라이선스 프로젝트 [tykimos/steampack](https://github.com/tykimos/steampack)의 fork입니다. 원저작권과 라이선스를 그대로 보존합니다.

@@ -8,7 +8,6 @@ options:
 settings:
   base:
     CODE_SIGN_STYLE: Automatic
-    DEVELOPMENT_TEAM: 6UF9Z668JW
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "1.4.0"
     CURRENT_PROJECT_VERSION: "5"
@@ -47,3 +46,16 @@ targets:
         INFOPLIST_FILE: Control/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_HARDENED_RUNTIME: YES
+
+  SteamPackTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests
+    dependencies:
+      - target: SteamPack
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/SteamPack.app/Contents/MacOS/SteamPack"
+        BUNDLE_LOADER: "$(TEST_HOST)"

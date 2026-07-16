@@ -1,62 +1,134 @@
 import Foundation
 
-/// 메인 앱(비-샌드박스)과 Control Widget 익스텐션(샌드박스) 공유 상태/IPC.
-///
-/// - 컨트롤 2개(각각 이진 토글): Keep Awake(caffeinate) / Clamshell(pmset disablesleep).
-///   토글은 이진이라 optimistic=실제와 일치 → 탭 시 아이콘이 정확히 따라옴.
-/// - 상태 공유: 익스텐션 샌드박스 컨테이너 내 파일(App Group은 무료 개인팀에서 미공유 확인).
-///   익스텐션=자기 컨테이너 읽기 / 앱=같은 절대경로 쓰기 (검증됨).
-/// - 명령 전달: Darwin notification → 앱이 두 상태 파일을 읽어 caffeinate/pmset 적용.
+/// Small file-based bridge between the non-sandboxed menu bar app and the
+/// sandboxed Control Widget extension. Requested and applied values are kept
+/// separate so Control Center never presents an unconfirmed state as real.
 enum SteamPackShared {
     static let controlBundleID = "com.steampack.app.control"
-
-    /// 두 컨트롤의 kind (reloadControls·StaticControlConfiguration 일치).
     static let keepAwakeKind = "com.steampack.app.keepawake"
     static let clamshellKind = "com.steampack.app.clamshell"
 
-    /// 컨트롤 → 앱: 어느 토글이 눌렸는지 구분 (계층 로직 적용 위해).
     static let keepAwakeRequestName = "com.steampack.keepAwakeRequested" as CFString
     static let clamshellRequestName = "com.steampack.clamshellRequested" as CFString
 
-    /// 익스텐션 컨테이너 Data 내 상태 파일 경로 (앱·익스텐션 동일 실파일).
-    private static func stateFileURL(_ name: String) -> URL {
+    private static let heartbeatMaxAge: TimeInterval = 6
+
+    static func readAppliedKeepAwake() -> Bool {
+        isAppAlive() && readBool("applied-keep-awake.state")
+    }
+
+    static func readAppliedClamshell() -> Bool {
+        isAppAlive() && readBool("applied-clamshell.state")
+    }
+
+    static func readRequestedKeepAwake() -> Bool {
+        readBool("requested-keep-awake.state")
+    }
+
+    static func readRequestedClamshell() -> Bool {
+        readBool("requested-clamshell.state")
+    }
+
+    @discardableResult
+    static func requestKeepAwake(_ enabled: Bool) -> Bool {
+        guard isAppAlive(), writeBool("requested-keep-awake.state", enabled) else { return false }
+        post(keepAwakeRequestName)
+        return true
+    }
+
+    @discardableResult
+    static func requestClamshell(_ enabled: Bool) -> Bool {
+        guard isAppAlive(), writeBool("requested-clamshell.state", enabled) else { return false }
+        post(clamshellRequestName)
+        return true
+    }
+
+    static func publishApplied(keepAwake: Bool, clamshell: Bool) {
+        _ = writeBool("applied-keep-awake.state", keepAwake)
+        _ = writeBool("applied-clamshell.state", clamshell)
+        _ = writeBool("requested-keep-awake.state", keepAwake)
+        _ = writeBool("requested-clamshell.state", clamshell)
+        publishHeartbeat()
+    }
+
+    static func publishHeartbeat(now: Date = Date()) {
+        _ = writeString("app-heartbeat.state", String(now.timeIntervalSince1970))
+    }
+
+    static func clearHeartbeat() {
+        try? FileManager.default.removeItem(at: stateFileURL("app-heartbeat.state"))
+    }
+
+    static func isAppAlive(now: Date = Date()) -> Bool {
+        guard let raw = readString("app-heartbeat.state"),
+              let timestamp = TimeInterval(raw),
+              timestamp <= now.timeIntervalSince1970 else { return false }
+        return now.timeIntervalSince1970 - timestamp <= heartbeatMaxAge
+    }
+
+    static func stateFileURL(_ name: String) -> URL {
+        if let override = ProcessInfo.processInfo.environment["STEAMPACK_STATE_DIR"],
+           !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true).appendingPathComponent(name)
+        }
+
         let home = NSHomeDirectory()
-        let dir: URL
+        let directory: URL
         if home.contains("/Containers/\(controlBundleID)/") {
-            dir = URL(fileURLWithPath: home)                       // 익스텐션
+            directory = URL(fileURLWithPath: home)
         } else {
-            dir = URL(fileURLWithPath: home)                       // 앱
+            directory = URL(fileURLWithPath: home)
                 .appendingPathComponent("Library/Containers/\(controlBundleID)/Data")
         }
-        return dir.appendingPathComponent(name)
+        return directory.appendingPathComponent(name)
     }
 
     private static func readBool(_ name: String) -> Bool {
-        guard let s = try? String(contentsOf: stateFileURL(name), encoding: .utf8) else { return false }
-        return s.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+        readString(name) == "1"
     }
 
-    private static func writeBool(_ name: String, _ on: Bool) {
+    private static func readString(_ name: String) -> String? {
+        guard let value = try? String(contentsOf: stateFileURL(name), encoding: .utf8) else {
+            return nil
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    @discardableResult
+    private static func writeBool(_ name: String, _ enabled: Bool) -> Bool {
+        writeString(name, enabled ? "1" : "0")
+    }
+
+    @discardableResult
+    private static func writeString(_ name: String, _ value: String) -> Bool {
         let url = stateFileURL(name)
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? (on ? "1" : "0").write(to: url, atomically: true, encoding: .utf8)
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try value.write(to: url, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
     }
 
-    // Keep Awake (caffeinate)
-    static func readKeepAwake() -> Bool { readBool("keepAwake.state") }
-    static func writeKeepAwake(_ on: Bool) { writeBool("keepAwake.state", on) }
-
-    // Clamshell (pmset disablesleep)
-    static func readClamshell() -> Bool { readBool("clamshell.state") }
-    static func writeClamshell(_ on: Bool) { writeBool("clamshell.state", on) }
-
-    /// 컨트롤에서 호출 — 어느 토글인지 알림.
-    static func postKeepAwakeRequest() { post(keepAwakeRequestName) }
-    static func postClamshellRequest() { post(clamshellRequestName) }
     private static func post(_ name: CFString) {
         CFNotificationCenterPostNotification(
             CFNotificationCenterGetDarwinNotifyCenter(),
-            CFNotificationName(name), nil, nil, true)
+            CFNotificationName(name),
+            nil,
+            nil,
+            true
+        )
+    }
+}
+
+enum SteamPackControlError: LocalizedError {
+    case appNotRunning
+
+    var errorDescription: String? {
+        "Open SteamPack before using this control."
     }
 }

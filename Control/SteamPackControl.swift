@@ -9,15 +9,16 @@ struct SetKeepAwakeIntent: SetValueIntent {
     @Parameter(title: "Keep Awake") var value: Bool
     init() {}
     func perform() async throws -> some IntentResult {
-        SteamPackShared.writeKeepAwake(value)
-        SteamPackShared.postKeepAwakeRequest()
+        guard SteamPackShared.requestKeepAwake(value) else {
+            throw SteamPackControlError.appNotRunning
+        }
         return .result()
     }
 }
 
 struct KeepAwakeProvider: ControlValueProvider {
     var previewValue: Bool { false }
-    func currentValue() async throws -> Bool { SteamPackShared.readKeepAwake() }
+    func currentValue() async throws -> Bool { SteamPackShared.readAppliedKeepAwake() }
 }
 
 struct KeepAwakeControl: ControlWidget {
@@ -48,15 +49,16 @@ struct SetClamshellIntent: SetValueIntent {
     @Parameter(title: "Clamshell Mode") var value: Bool
     init() {}
     func perform() async throws -> some IntentResult {
-        SteamPackShared.writeClamshell(value)
-        SteamPackShared.postClamshellRequest()
+        guard SteamPackShared.requestClamshell(value) else {
+            throw SteamPackControlError.appNotRunning
+        }
         return .result()
     }
 }
 
 struct ClamshellProvider: ControlValueProvider {
     var previewValue: Bool { false }
-    func currentValue() async throws -> Bool { SteamPackShared.readClamshell() }
+    func currentValue() async throws -> Bool { SteamPackShared.readAppliedClamshell() }
 }
 
 struct ClamshellControl: ControlWidget {

@@ -3,12 +3,9 @@
     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Widget 익스텐션은 샌드박스 필수. App Group으로 메인 앱과 상태 공유. -->
+    <!-- Widget extensions must be sandboxed. Shared state stays in this
+         extension's own container and contains no sensitive information. -->
     <key>com.apple.security.app-sandbox</key>
     <true/>
-    <key>com.apple.security.application-groups</key>
-    <array>
-        <string>group.com.steampack.shared</string>
-    </array>
 </dict>
 </plist>
