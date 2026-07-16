@@ -42,7 +42,9 @@ class SleepToggle {
         // applicationWillTerminate는 SIGKILL/크래시엔 안 불리므로, 이 옵션이
         // 고아 caffeinate가 sleep을 영영 차단하는 것을 커널 레벨에서 막는다.
         let selfPID = ProcessInfo.processInfo.processIdentifier
-        p.arguments = ["-s", "-d", "-i", "-w", "\(selfPID)"]
+        // -s(시스템 sleep 방지)는 AC 전용이라 배터리에서 무력 → 제거.
+        // -d(디스플레이) -i(유휴 시스템) -m(디스크)는 전원 무관 작동(뚜껑 열림 기준).
+        p.arguments = ["-d", "-i", "-m", "-w", "\(selfPID)"]
         // 자식이 예기치 않게 죽으면 상태 리셋 (UI는 다음 메뉴 오픈 시 동기화).
         // terminationHandler는 임의 백그라운드 큐에서 호출되므로
         // 상태 변수 변경은 메인 스레드로 디스패치해 데이터 레이스 방지.

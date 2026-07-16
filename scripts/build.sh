@@ -2,66 +2,37 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="$PROJECT_ROOT/build"
-APP_BUNDLE="$BUILD_DIR/SteamPack.app"
+DERIVED_DATA="${DERIVED_DATA:-/tmp/steampack-build}"
+OUTPUT_DIR="$PROJECT_ROOT/build"
+TEAM="${DEVELOPMENT_TEAM:-}"
 
-echo "=== SteamPack Build ==="
-
-rm -rf "$APP_BUNDLE"
-
-# --- 1. Build App ---
-echo "[1/3] Building SteamPack.app..."
-mkdir -p "$APP_BUNDLE/Contents/MacOS"
-mkdir -p "$APP_BUNDLE/Contents/Resources"
-
-cp "$PROJECT_ROOT/AppInfo.plist" "$APP_BUNDLE/Contents/Info.plist"
-# Copy icon if available
-[ -f "$PROJECT_ROOT/resources/AppIcon.icns" ] && \
-    cp "$PROJECT_ROOT/resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
-echo -n "APPLSTPK" > "$APP_BUNDLE/Contents/PkgInfo"
-
-# arm64 build
-swiftc \
-    -target arm64-apple-macosx13.0 \
-    -module-name SteamPack \
-    -framework Cocoa \
-    -framework Security \
-    -o "$APP_BUNDLE/Contents/MacOS/SteamPack-arm64" \
-    "$PROJECT_ROOT"/src/*.swift
-
-# x86_64 build (optional - may fail on arm64-only environments)
-swiftc \
-    -target x86_64-apple-macosx13.0 \
-    -module-name SteamPack \
-    -framework Cocoa \
-    -framework Security \
-    -o "$APP_BUNDLE/Contents/MacOS/SteamPack-x86_64" \
-    "$PROJECT_ROOT"/src/*.swift 2>/dev/null || true
-
-# Universal Binary (if x86_64 succeeded)
-if [ -f "$APP_BUNDLE/Contents/MacOS/SteamPack-x86_64" ]; then
-    lipo -create \
-        "$APP_BUNDLE/Contents/MacOS/SteamPack-arm64" \
-        "$APP_BUNDLE/Contents/MacOS/SteamPack-x86_64" \
-        -output "$APP_BUNDLE/Contents/MacOS/SteamPack"
-    rm "$APP_BUNDLE/Contents/MacOS/SteamPack-arm64" "$APP_BUNDLE/Contents/MacOS/SteamPack-x86_64"
-else
-    mv "$APP_BUNDLE/Contents/MacOS/SteamPack-arm64" "$APP_BUNDLE/Contents/MacOS/SteamPack"
+if [ -z "$TEAM" ]; then
+    echo "DEVELOPMENT_TEAM is required for the macOS Control Center extension."
+    echo "Example: DEVELOPMENT_TEAM=ABCDE12345 scripts/build.sh"
+    exit 2
 fi
 
-echo "  ✓ SteamPack.app"
+command -v xcodegen >/dev/null || {
+    echo "xcodegen is required: brew install xcodegen"
+    exit 2
+}
 
-# --- 2. Code Sign ---
-echo "[2/3] Code signing..."
-codesign --force --sign - "$APP_BUNDLE" 2>&1
-echo "  ✓ Signed (ad-hoc)"
+cd "$PROJECT_ROOT"
+xcodegen generate
 
-# --- 3. Verify ---
-echo "[3/3] Verifying..."
-[ -f "$APP_BUNDLE/Contents/MacOS/SteamPack" ] || { echo "  ✗ Binary missing"; exit 1; }
-[ -f "$APP_BUNDLE/Contents/Info.plist" ] || { echo "  ✗ Info.plist missing"; exit 1; }
-echo "  ✓ All verified"
+xcodebuild \
+    -project SteamPack.xcodeproj \
+    -scheme SteamPack \
+    -configuration Release \
+    -derivedDataPath "$DERIVED_DATA" \
+    -allowProvisioningUpdates \
+    DEVELOPMENT_TEAM="$TEAM" \
+    build
 
-echo ""
-echo "=== Build complete ==="
-echo "  $APP_BUNDLE"
+mkdir -p "$OUTPUT_DIR"
+/usr/bin/ditto \
+    "$DERIVED_DATA/Build/Products/Release/SteamPack.app" \
+    "$OUTPUT_DIR/SteamPack.app"
+
+codesign --verify --deep --strict --verbose=2 "$OUTPUT_DIR/SteamPack.app"
+echo "Built: $OUTPUT_DIR/SteamPack.app"

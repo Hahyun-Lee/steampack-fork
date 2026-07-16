@@ -12,6 +12,7 @@ dist/
 *.xcworkspace/
 DerivedData/
 xcuserdata/
+*.profraw
 
 # Claude Code / OMC
 .claude/

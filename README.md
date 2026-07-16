@@ -8,160 +8,108 @@
 
 # SteamPack
 
-<img src="capture.jpg" width="600" alt="SteamPack Screenshot"/>
-
-**Keep your Mac awake with a single click.**
+**Native Keep Awake and Closed-Lid controls for macOS Tahoe.**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
-[![macOS](https://img.shields.io/badge/macOS-13%2B-000000?style=for-the-badge&logo=apple&logoColor=white)](https://www.apple.com/macos/)
+[![macOS 26+](https://img.shields.io/badge/macOS-26%2B-000000?style=for-the-badge&logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-F05138?style=for-the-badge&logo=swift&logoColor=white)](https://swift.org)
-[![Build](https://img.shields.io/badge/build-swiftc-lightgrey?style=for-the-badge)](scripts/build.sh)
-
-*Toggle · Store · Forget — sleep control from the menu bar.*
-
-[Getting Started](#-getting-started) · [How It Works](#-how-it-works) · [Usage](#-usage) · [Build](#-build-from-source) · [Architecture](#-architecture)
 
 </div>
 
----
+SteamPack is a small, open-source menu bar utility with two linked native controls:
 
-## What is this?
+- **Keep Awake** prevents idle, display, and disk sleep while the lid is open.
+- **Clamshell Mode** keeps the Mac running after the lid closes, including on battery.
 
-SteamPack is a **lightweight macOS menu bar utility** that toggles your Mac's sleep mode with a single click. It runs `pmset -a disablesleep` under the hood — no more typing long terminal commands.
+Both controls can live in macOS Control Center or be pinned directly to the menu bar. Clamshell Mode is a child of Keep Awake: enabling it also enables Keep Awake, while turning Keep Awake off restores every sleep setting.
 
-> **Why "SteamPack"?** — Like a steam-powered jetpack that keeps you flying, SteamPack keeps your Mac running without ever touching down to sleep.
+> **Public preview:** the source is ready for testing. A downloadable DMG will be published only after Developer ID signing and Apple notarization are available. SteamPack intentionally does not distribute an unsigned public binary.
 
----
+## Why this exists
 
-## ✨ Features
+Long uploads, builds, backups, remote sessions, and local coding agents often need a MacBook to continue working after the lid closes. `caffeinate` cannot override lid-close sleep on battery. SteamPack provides a visible, reversible control without storing an administrator password.
 
-- **One-click toggle** — Enable or disable sleep from the menu bar
-- **Scheduled sleep** — Keep Mac awake for 10m / 30m / 1h / 2h / 4h, then auto-sleep
-- **Live countdown** — Remaining time displayed in the menu bar
-- **Start at Login** — Optional auto-start when you log in
-- **Secure password storage** — sudo password stored in macOS Keychain
-- **Zero footprint** — No dock icon, no window, just a menu bar icon
-- **Universal Binary** — Runs natively on Apple Silicon and Intel
-- **No dependencies** — Pure AppKit, no third-party libraries
+## Safety model
 
----
+Closed-lid operation can generate heat and drain a battery. SteamPack treats crash recovery as part of the feature, not an optional extra.
 
-## 🚀 Getting Started
+- **Crash/SIGKILL watchdog:** every Clamshell session owns a pipe lease. If the app crashes or is force-killed, a separate watchdog restores normal sleep.
+- **Token-scoped ownership:** an old watchdog cannot turn off a newer session, and SteamPack does not claim a sleep state created by another app.
+- **Battery cutoff:** Clamshell Mode turns off at 20% when running on battery.
+- **Thermal cutoff:** serious or critical macOS thermal pressure immediately turns Clamshell Mode off.
+- **Timers and quit cleanup:** auto-off timers and “Quit & Restore Sleep” restore normal sleep.
+- **Truthful controls:** Control Center displays the last confirmed applied state, not an optimistic request. Controls fail closed when the menu bar app is not alive.
+- **Restricted privilege:** the optional sudoers rule permits only these exact commands:
 
-### Download DMG
+```text
+/usr/bin/pmset disablesleep 1
+/usr/bin/pmset disablesleep 0
+```
 
-1. Download `SteamPack.dmg` from [Releases](../../releases)
-2. Open the DMG → drag **SteamPack** to **Applications**
-3. Launch SteamPack
+SteamPack never stores or pipes an administrator password. Permission can be removed from the app at any time.
 
-### Build from Source
+## Requirements
+
+- macOS Tahoe 26.0 or later
+- Xcode 26 and [XcodeGen](https://github.com/yonaskolb/XcodeGen) to build from source
+- A free Apple Development team for native Control Center rendering
+
+## Build and run
 
 ```bash
-git clone https://github.com/tykimos/steampack.git
-cd steampack
-bash scripts/build.sh
+git clone https://github.com/Hahyun-Lee/steampack-fork.git
+cd steampack-fork
+brew install xcodegen
+xcodegen generate
+DEVELOPMENT_TEAM=YOUR_TEAM_ID scripts/build.sh
 open build/SteamPack.app
 ```
 
-> **Requires:** Xcode Command Line Tools (`xcode-select --install`)
+You can also open `SteamPack.xcodeproj` in Xcode, select your development team for both app targets, and run the `SteamPack` scheme.
 
----
+On first use of Clamshell Mode, choose **Install Clamshell Permission…**. macOS presents one administrator approval prompt. Keep Awake does not require this permission.
 
-## 👁 Usage
+To add the controls:
 
-| Step | Action |
-|------|--------|
-| **Launch** | Eye icon appears in the menu bar |
-| **First run** | Enter sudo password (stored in Keychain) |
-| **Toggle** | Click icon → **Disable Sleep** / **Enable Sleep** |
-| **Change password** | Click icon → **Change Password** |
-| **Quit** | Click icon → **Quit** (`⌘Q`) |
+1. Open macOS Control Center and choose **Edit Controls**.
+2. Add **SteamPack Keep Awake** and **SteamPack Clamshell**.
+3. Optionally pin either control directly to the menu bar.
 
-### Menu Bar Icons
+## Testing
 
-| Icon | State | Meaning |
-|------|-------|---------|
-| `eye.half.closed.fill` | Normal | Sleep **enabled** — Mac can sleep |
-| `eye.fill` | Active | Sleep **disabled** — Mac stays awake |
-| `hourglass.badge.eye` + countdown | Timer | Sleep disabled for set duration — countdown shown as `MM:SS` |
-
-<img src="timer.jpg" width="600" alt="Scheduled Sleep Timer"/>
-
----
-
-## ⚙️ How It Works
-
-SteamPack executes `sudo pmset -a disablesleep 1` (disable) or `0` (enable) using the password stored in your macOS Keychain.
-
-```mermaid
-flowchart TB
-    subgraph MenuBar["macOS Menu Bar"]
-        ICON["👁 SteamPack Icon"]
-    end
-
-    subgraph Menu["Drop-down Menu"]
-        STATUS["Sleep Enabled / Disabled"]
-        TOGGLE["Disable Sleep ⌘T"]
-        CHANGEPW["Change Password"]
-        QUIT["Quit ⌘Q"]
-    end
-
-    subgraph Security["Security Layer"]
-        KEYCHAIN["🔑 macOS Keychain\n(sudo password)"]
-    end
-
-    subgraph System["macOS System"]
-        PMSET["sudo pmset -a disablesleep 1/0"]
-    end
-
-    ICON -->|Click| Menu
-    TOGGLE --> KEYCHAIN
-    KEYCHAIN -->|"stdin pipe"| PMSET
-    PMSET -->|"State changed"| STATUS
-
-    style MenuBar fill:#e8f4fd,stroke:#2196F3,color:#1565C0
-    style Menu fill:#fff3e0,stroke:#FF9800,color:#E65100
-    style Security fill:#e8f5e9,stroke:#4CAF50,color:#2E7D32
-    style System fill:#fce4ec,stroke:#E91E63,color:#880E4F
+```bash
+xcodegen generate
+xcodebuild \
+  -project SteamPack.xcodeproj \
+  -scheme SteamPack \
+  -derivedDataPath /tmp/steampack-tests \
+  CODE_SIGNING_ALLOWED=NO \
+  test
 ```
 
----
+The tests cover battery and thermal policy, crash-recovery ownership, stale watchdog races, and Control Center heartbeat/state behavior.
 
-## 🏗 Architecture
+After building and installing the restricted Clamshell permission, the following opt-in integration check briefly changes `SleepDisabled`, closes the watchdog lease as a crashed app would, and verifies that normal sleep is restored. It refuses to run if sleep is already disabled.
 
-```
-steampack/
-├── src/
-│   ├── AppMain.swift          # Entry point, NSStatusItem menu bar
-│   ├── SleepToggle.swift      # pmset execution & state detection
-│   ├── KeychainHelper.swift   # Keychain Services wrapper
-│   └── PasswordPrompt.swift   # Secure password input dialog
-├── scripts/
-│   ├── build.sh               # Build automation (swiftc)
-│   └── create-dmg.sh          # DMG packaging (hdiutil)
-├── AppInfo.plist              # App bundle configuration
-├── capture.jpg                # Screenshot
-├── README.md                  # English
-└── README_ko.md               # 한국어
+```bash
+scripts/verify-crash-recovery.sh
 ```
 
----
+## Release integrity
 
-## 🔒 Security
+`scripts/release.sh` refuses to create a public artifact unless both a Developer ID Application identity and an Apple notarization profile are supplied. A release must pass deep signature verification, notarization, stapling, and Gatekeeper assessment.
 
-- Passwords stored exclusively in **macOS Keychain** (`com.steampack.sudo`)
-- Password passed to sudo via **stdin pipe** — not visible in process list
-- Authentication failure triggers password re-entry
-- Ad-hoc code signed
+## Important limitations
 
----
+- `pmset disablesleep` is an undocumented macOS behavior and may change in a future release.
+- Safety cutoffs reduce risk but cannot make a closed, heavily loaded MacBook safe inside a bag. Keep ventilation clear and use judgment.
+- The menu bar app must remain running for Control Center actions. Stale controls automatically display off.
+- SteamPack cannot safely coordinate ownership with another utility changing the same global `SleepDisabled` flag. It detects that state and refuses to claim it.
 
-## 📄 License
+## Privacy and security
 
-MIT License — see [LICENSE](LICENSE) for details.
+SteamPack has no telemetry, analytics, accounts, network requests, or stored passwords. See [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md).
 
-<div align="center">
+## Attribution
 
-*Built with ❤️ and [Claude Code](https://claude.ai/code)*
-
-</div>
+SteamPack is an MIT-licensed fork of [tykimos/steampack](https://github.com/tykimos/steampack). The original copyright and license are preserved.
