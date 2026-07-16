@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/control-center-toggle]
+    branches: [main]
   pull_request:
 
 permissions:
