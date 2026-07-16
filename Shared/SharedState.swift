@@ -129,6 +129,6 @@ enum SteamPackControlError: LocalizedError {
     case appNotRunning
 
     var errorDescription: String? {
-        "Open SteamPack before using this control."
+        SteamPackL10n.text("Open SteamPack before using this control.")
     }
 }

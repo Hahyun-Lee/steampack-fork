@@ -1,0 +1,81 @@
+/* Control Center */
+"Keep Awake" = "잠자기 방지";
+"Awake" = "깨어 있음";
+"Sleep OK" = "잠자기 가능";
+"SteamPack Keep Awake" = "SteamPack 잠자기 방지";
+"Prevent sleep (display lid open)." = "덮개를 연 채 Mac이 잠들지 않게 합니다.";
+"Closed Lid" = "덮개 닫고 계속";
+"Closed Lid On" = "덮개 닫기 켜짐";
+"Closed Lid Off" = "덮개 닫기 꺼짐";
+"SteamPack Closed Lid" = "SteamPack 덮개 닫고 계속";
+"Keep working after you close the lid, even on battery." = "배터리에서도 덮개를 닫은 채 작업을 계속합니다.";
+"Open SteamPack before using this control." = "이 컨트롤을 사용하려면 SteamPack을 먼저 실행하세요.";
+
+/* Menu and status */
+"Watchdog stopped — normal sleep restored" = "강제 종료 보호 중단 — 정상 잠자기로 복구됨";
+"Safety restored sleep — %@" = "안전 보호 작동 — 정상 잠자기로 복구됨 · %@";
+"Closed-Lid mode was blocked for safety. %@." = "안전을 위해 덮개 닫기 모드를 켜지 않았습니다. %@.";
+"Quit & Restore Sleep" = "종료하고 정상 잠자기로 복구";
+"Auto-Off Timer" = "자동 종료 타이머";
+"10 Minutes" = "10분";
+"30 Minutes" = "30분";
+"1 Hour" = "1시간";
+"2 Hours" = "2시간";
+"4 Hours" = "4시간";
+"Cancel Timer" = "타이머 취소";
+"Remove Closed-Lid Permission…" = "덮개 닫기 권한 제거…";
+"Install Closed-Lid Permission…" = "덮개 닫기 권한 설치…";
+"Start at Login" = "로그인할 때 자동 실행";
+"AC power" = "전원 연결";
+"Battery %d%%" = "배터리 %d%%";
+"Battery" = "배터리";
+"temperature normal" = "온도 정상";
+"temperature elevated" = "온도 상승";
+"temperature high" = "온도 높음";
+"temperature unknown" = "온도 확인 불가";
+"Safety: %@ · %@ · auto-off at 20%%" = "안전 상태: %@ · %@ · 배터리 20%%에서 자동 종료";
+"Auto-off in %@" = "%@ 후 자동 종료";
+"Closed Lid — crash guard armed" = "덮개를 닫아도 계속 실행 — 강제 종료 보호 켜짐";
+"Sleep is disabled by another app or command" = "다른 앱 또는 명령이 잠자기를 막고 있음";
+"Keep Awake — lid open" = "잠자기 방지 — 덮개 열림";
+"Normal Sleep" = "정상 잠자기";
+"Turn Keep Awake Off" = "잠자기 방지 끄기";
+"Turn Keep Awake On" = "잠자기 방지 켜기";
+"Keep Working with Lid Closed" = "덮개 닫고 계속 사용";
+
+/* Permission and alerts */
+"Closed-Lid Mode" = "덮개 닫기 모드";
+"Closed-Lid Permission" = "덮개 닫기 권한";
+"Remove Closed-Lid permission?" = "덮개 닫기 권한을 제거할까요?";
+"Keep Awake will continue to work, but closed-lid mode will be unavailable." = "일반 잠자기 방지는 계속 사용할 수 있지만, 덮개를 닫은 상태에서는 작업을 계속할 수 없습니다.";
+"Remove" = "제거";
+"Cancel" = "취소";
+"Install restricted Closed-Lid permission?" = "덮개 닫기용 최소 권한을 설치할까요?";
+"SteamPack will ask macOS once for administrator approval. The installed rule permits only the two exact pmset commands that turn closed-lid sleep prevention on and off." = "macOS 관리자 승인을 한 번 요청합니다. 설치되는 규칙은 덮개 닫기 모드를 켜고 끄는 정확한 pmset 명령 두 개만 허용합니다.";
+"Install" = "설치";
+"OK" = "확인";
+
+/* Clamshell errors */
+"Sleep is already disabled by another app or command." = "다른 앱 또는 명령이 이미 잠자기를 막고 있습니다.";
+"Closed-Lid permission is not installed." = "덮개 닫기 권한이 설치되지 않았습니다.";
+"Could not create the crash-recovery lease: %@" = "강제 종료 복구 연결을 만들 수 없습니다: %@";
+"The crash-recovery watchdog could not start." = "강제 종료 보호 프로세스를 시작할 수 없습니다.";
+"macOS rejected the sleep setting." = "macOS가 잠자기 설정을 허용하지 않았습니다.";
+"macOS could not restore normal sleep." = "macOS가 정상 잠자기를 복구하지 못했습니다.";
+
+/* Power safety and notifications */
+"Battery is at %d%%" = "배터리가 %d%% 남음";
+"Mac temperature is too high" = "Mac 온도가 너무 높음";
+"SteamPack restored normal sleep" = "SteamPack이 정상 잠자기를 복구했습니다";
+"Closed-Lid mode was turned off for safety. %@." = "안전을 위해 덮개 닫기 모드를 껐습니다. %@.";
+"SteamPack watchdog stopped" = "SteamPack 강제 종료 보호가 중단되었습니다";
+"Normal lid-close sleep was restored because crash recovery was no longer available." = "강제 종료 복구를 사용할 수 없어 덮개를 닫을 때 정상적으로 잠자도록 복구했습니다.";
+"SteamPack could not apply the control" = "SteamPack이 설정을 적용하지 못했습니다";
+
+/* Authorization errors */
+"Could not create authorization prompt" = "관리자 승인 창을 만들 수 없습니다";
+"Authorization was cancelled" = "관리자 승인이 취소되었습니다";
+"The current macOS account name is not supported." = "현재 macOS 계정 이름은 지원되지 않습니다.";
+"The restricted sudo rule did not pass validation." = "최소 권한 규칙이 안전성 검증을 통과하지 못했습니다.";
+"The restricted Closed-Lid permission was not installed." = "덮개 닫기용 최소 권한을 설치하지 못했습니다.";
+"The restricted Closed-Lid permission could not be removed." = "덮개 닫기용 최소 권한을 제거하지 못했습니다.";

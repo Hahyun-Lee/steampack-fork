@@ -2,7 +2,10 @@
 
 ## 1.4.0 Public Preview
 
-- Added native macOS Control Center controls for Keep Awake and Clamshell Mode.
+- Added native macOS Control Center controls for Keep Awake and Closed Lid.
+- Added complete Korean localization for the app, alerts, notifications, and Control Center.
+- Added Korean and English product visuals plus start-to-finish guides.
+- Replaced technical Clamshell labels with clearer Closed Lid user-facing copy.
 - Added linked master/child control behavior.
 - Added a pipe-lease watchdog that restores sleep after crashes and SIGKILL.
 - Added token-scoped ownership to prevent stale-watchdog races and external-state takeover.

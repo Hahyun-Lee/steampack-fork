@@ -81,11 +81,14 @@ enum ClamshellAuthorization {
         let source = "do shell script \(appleScriptLiteral(shellCommand)) with administrator privileges"
         var errorInfo: NSDictionary?
         guard let script = NSAppleScript(source: source) else {
-            throw AuthorizationError.promptFailed("Could not create authorization prompt")
+            throw AuthorizationError.promptFailed(
+                SteamPackL10n.text("Could not create authorization prompt")
+            )
         }
         script.executeAndReturnError(&errorInfo)
         if let errorInfo {
-            let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "Authorization was cancelled"
+            let message = errorInfo[NSAppleScript.errorMessage] as? String
+                ?? SteamPackL10n.text("Authorization was cancelled")
             throw AuthorizationError.promptFailed(message)
         }
     }
@@ -109,11 +112,15 @@ enum ClamshellAuthorization {
 
         var errorDescription: String? {
             switch self {
-            case .invalidUserName: return "The current macOS account name is not supported."
-            case .invalidRule: return "The restricted sudo rule did not pass validation."
+            case .invalidUserName:
+                return SteamPackL10n.text("The current macOS account name is not supported.")
+            case .invalidRule:
+                return SteamPackL10n.text("The restricted sudo rule did not pass validation.")
             case .promptFailed(let message): return message
-            case .installationFailed: return "The restricted Clamshell permission was not installed."
-            case .removalFailed: return "The restricted Clamshell permission could not be removed."
+            case .installationFailed:
+                return SteamPackL10n.text("The restricted Closed-Lid permission was not installed.")
+            case .removalFailed:
+                return SteamPackL10n.text("The restricted Closed-Lid permission could not be removed.")
             }
         }
     }
