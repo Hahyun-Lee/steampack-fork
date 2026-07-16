@@ -6,76 +6,116 @@
 
 <div align="center">
 
-# SteamPack
+<img src="assets/hero-en.png" width="100%" alt="SteamPack keeps uploads, builds, and remote work running on a fully closed laptop">
 
-**Native Keep Awake and Closed-Lid controls for macOS Tahoe.**
+# SteamPack — Close the lid. Keep the work running.
 
-[![MIT License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
-[![macOS 26+](https://img.shields.io/badge/macOS-26%2B-000000?style=for-the-badge&logo=apple&logoColor=white)](https://www.apple.com/macos/)
-[![Swift](https://img.shields.io/badge/Swift-F05138?style=for-the-badge&logo=swift&logoColor=white)](https://swift.org)
+**Two simple macOS controls for staying awake with the lid open or closed.**
+
+[![MIT License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![macOS 26+](https://img.shields.io/badge/macOS-26%2B-black?style=flat-square&logo=apple)](https://www.apple.com/macos/)
+[![English + 한국어](https://img.shields.io/badge/UI-English%20%2B%20한국어-orange?style=flat-square)](README_ko.md)
 
 </div>
 
-SteamPack is a small, open-source menu bar utility with two linked native controls:
+SteamPack is a small open-source menu bar app for long uploads, builds, backups, and remote sessions. Its controls can live in macOS Control Center or directly in the menu bar.
 
-- **Keep Awake** prevents idle, display, and disk sleep while the lid is open.
-- **Clamshell Mode** keeps the Mac running after the lid closes, including on battery.
+## Pick the control you need
 
-Both controls can live in macOS Control Center or be pinned directly to the menu bar. Clamshell Mode is a child of Keep Awake: enabling it also enables Keep Awake, while turning Keep Awake off restores every sleep setting.
+| Control | What it does | Best for | Permission |
+|---|---|---|---|
+| **Keep Awake** | Prevents idle, display, and disk sleep while the lid is open | Presentations, downloads, builds | None |
+| **Closed Lid** | Keeps work running after the lid closes, including on battery | Uploads, remote access, long agents | One restricted administrator approval |
 
-> **Public preview:** the source is ready for testing. A downloadable DMG will be published only after Developer ID signing and Apple notarization are available. SteamPack intentionally does not distribute an unsigned public binary.
+Turning **Closed Lid** on also turns **Keep Awake** on. Turning **Keep Awake** off restores all normal sleep behavior.
 
-## Why this exists
+> **Source preview:** a public DMG is intentionally unavailable until Developer ID signing and Apple notarization are ready. The current release is for people comfortable building from source.
 
-Long uploads, builds, backups, remote sessions, and local coding agents often need a MacBook to continue working after the lid closes. `caffeinate` cannot override lid-close sleep on battery. SteamPack provides a visible, reversible control without storing an administrator password.
+## Start to finish
 
-## Safety model
+### 1. Build and install
 
-Closed-lid operation can generate heat and drain a battery. SteamPack treats crash recovery as part of the feature, not an optional extra.
+You need macOS Tahoe 26+, Xcode 26, [Homebrew](https://brew.sh), XcodeGen, and an Apple Development team. A free Apple ID team works.
 
-- **Crash/SIGKILL watchdog:** every Clamshell session owns a pipe lease. If the app crashes or is force-killed, a separate watchdog restores normal sleep.
-- **Token-scoped ownership:** an old watchdog cannot turn off a newer session, and SteamPack does not claim a sleep state created by another app.
-- **Battery cutoff:** Clamshell Mode turns off at 20% when running on battery.
-- **Thermal cutoff:** serious or critical macOS thermal pressure immediately turns Clamshell Mode off.
-- **Timers and quit cleanup:** auto-off timers and “Quit & Restore Sleep” restore normal sleep.
-- **Truthful controls:** Control Center displays the last confirmed applied state, not an optimistic request. Controls fail closed when the menu bar app is not alive.
-- **Restricted privilege:** the optional sudoers rule permits only these exact commands:
+```bash
+git clone https://github.com/Hahyun-Lee/steampack-fork.git
+cd steampack-fork
+brew install xcodegen
+DEVELOPMENT_TEAM=YOUR_10_CHARACTER_TEAM_ID scripts/build.sh
+ditto build/SteamPack.app /Applications/SteamPack.app
+open /Applications/SteamPack.app
+```
+
+If you prefer Xcode, run `xcodegen generate`, open `SteamPack.xcodeproj`, choose your team for both app targets under **Signing & Capabilities**, and run the **SteamPack** scheme.
+
+### 2. Turn on the right mode
+
+Click the SteamPack icon in the menu bar.
+
+- Choose **Turn Keep Awake On** when the lid will stay open. No administrator permission is needed.
+- Choose **Install Closed-Lid Permission…** once, approve the macOS prompt, then choose **Keep Working with Lid Closed** when you need to close the lid.
+
+The installed rule permits only these two exact commands. SteamPack never stores or pipes an administrator password.
 
 ```text
 /usr/bin/pmset disablesleep 1
 /usr/bin/pmset disablesleep 0
 ```
 
-SteamPack never stores or pipes an administrator password. Permission can be removed from the app at any time.
+### 3. Add the two controls
 
-## Requirements
+1. Open macOS **Control Center**.
+2. Choose **Edit Controls**.
+3. Add **SteamPack Keep Awake** and **SteamPack Closed Lid**.
+4. Optionally pin either control directly to the menu bar.
 
-- macOS Tahoe 26.0 or later
-- Xcode 26 and [XcodeGen](https://github.com/yonaskolb/XcodeGen) to build from source
-- A free Apple Development team for native Control Center rendering
+The SteamPack app must be running. If it is not, the controls show OFF and ask you to open the app.
 
-## Build and run
+### 4. Use it safely
 
-```bash
-git clone https://github.com/Hahyun-Lee/steampack-fork.git
-cd steampack-fork
-brew install xcodegen
-xcodegen generate
-DEVELOPMENT_TEAM=YOUR_TEAM_ID scripts/build.sh
-open build/SteamPack.app
-```
+Turn on the mode, confirm the menu says it is active, and keep the MacBook on a hard, ventilated surface. Never put a working closed MacBook inside a bag.
 
-You can also open `SteamPack.xcodeproj` in Xcode, select your development team for both app targets, and run the `SteamPack` scheme.
+SteamPack automatically turns **Closed Lid** off when:
 
-On first use of Clamshell Mode, choose **Install Clamshell Permission…**. macOS presents one administrator approval prompt. Keep Awake does not require this permission.
+- battery reaches 20% while unplugged;
+- macOS reports serious or critical thermal pressure;
+- the auto-off timer expires;
+- you choose **Quit & Restore Sleep**;
+- the app crashes or is force-killed.
 
-To add the controls:
+### 5. Stop or remove it
 
-1. Open macOS Control Center and choose **Edit Controls**.
-2. Add **SteamPack Keep Awake** and **SteamPack Clamshell**.
-3. Optionally pin either control directly to the menu bar.
+For everyday use, turn **Keep Awake** off to restore every normal sleep setting.
 
-## Testing
+To uninstall completely:
+
+1. Choose **Remove Closed-Lid Permission…** in the SteamPack menu.
+2. Choose **Quit & Restore Sleep**.
+3. Move `SteamPack.app` from Applications to the Trash.
+
+## English and Korean UI
+
+SteamPack follows the macOS language setting. To choose a language only for SteamPack, open **System Settings → General → Language & Region → Applications**, add SteamPack, and select English or Korean.
+
+## Safety by design
+
+- **Crash recovery:** every Closed-Lid session has a separate pipe-lease watchdog that restores normal lid-close sleep after a crash or SIGKILL.
+- **Session ownership:** an old watchdog cannot turn off a newer session, and SteamPack refuses to claim a sleep state created by another tool.
+- **Confirmed state:** Control Center shows the applied state rather than an optimistic request and fails closed when the app heartbeat stops.
+- **Battery and thermal cutoffs:** 20% battery, serious heat, and critical heat restore normal lid-close sleep.
+- **Minimal privilege:** no shell, wildcard arguments, stored password, telemetry, account, or network request.
+
+## Troubleshooting
+
+| Symptom | What to do |
+|---|---|
+| Controls are missing | Confirm macOS 26+, launch SteamPack once, then reopen **Edit Controls**. |
+| A control says to open SteamPack | Launch `/Applications/SteamPack.app`; the controls intentionally fail closed. |
+| Closed Lid will not turn on | Install the restricted permission from the app menu and try again. |
+| Closed Lid is unavailable | Another app or command owns the global `SleepDisabled` state. Restore that tool first. |
+| Korean UI does not appear | Select Korean for SteamPack in **Language & Region → Applications**, then relaunch. |
+
+## Test and release integrity
 
 ```bash
 xcodegen generate
@@ -87,29 +127,16 @@ xcodebuild \
   test
 ```
 
-The tests cover battery and thermal policy, crash-recovery ownership, stale watchdog races, and Control Center heartbeat/state behavior.
+After building and installing the restricted permission, `scripts/verify-crash-recovery.sh` briefly enables `SleepDisabled`, closes the watchdog lease as a crashed app would, and verifies that normal sleep returns. It refuses to run if sleep is already disabled.
 
-After building and installing the restricted Clamshell permission, the following opt-in integration check briefly changes `SleepDisabled`, closes the watchdog lease as a crashed app would, and verifies that normal sleep is restored. It refuses to run if sleep is already disabled.
-
-```bash
-scripts/verify-crash-recovery.sh
-```
-
-## Release integrity
-
-`scripts/release.sh` refuses to create a public artifact unless both a Developer ID Application identity and an Apple notarization profile are supplied. A release must pass deep signature verification, notarization, stapling, and Gatekeeper assessment.
+`scripts/release.sh` refuses to produce a public artifact without Developer ID signing and Apple notarization. A binary release must pass signature verification, notarization, stapling, and Gatekeeper assessment.
 
 ## Important limitations
 
-- `pmset disablesleep` is an undocumented macOS behavior and may change in a future release.
-- Safety cutoffs reduce risk but cannot make a closed, heavily loaded MacBook safe inside a bag. Keep ventilation clear and use judgment.
-- The menu bar app must remain running for Control Center actions. Stale controls automatically display off.
-- SteamPack cannot safely coordinate ownership with another utility changing the same global `SleepDisabled` flag. It detects that state and refuses to claim it.
-
-## Privacy and security
+- `pmset disablesleep` is undocumented macOS behavior and may change.
+- Protection reduces risk but cannot make a heavily loaded closed laptop safe in a bag.
+- SteamPack cannot coordinate ownership with another tool changing the same global `SleepDisabled` flag.
 
 SteamPack has no telemetry, analytics, accounts, network requests, or stored passwords. See [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md).
-
-## Attribution
 
 SteamPack is an MIT-licensed fork of [tykimos/steampack](https://github.com/tykimos/steampack). The original copyright and license are preserved.

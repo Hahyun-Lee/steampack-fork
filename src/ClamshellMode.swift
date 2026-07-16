@@ -74,10 +74,10 @@ final class ClamshellMode {
     private func enable() -> ToggleResult {
         guard !isOn else { return .success }
         guard !isExternallyDisabled else {
-            return .failed("Sleep is already disabled by another app or command.")
+            return .failed(SteamPackL10n.text("Sleep is already disabled by another app or command."))
         }
         guard isAuthorized else {
-            return .failed("Clamshell permission is not installed.")
+            return .failed(SteamPackL10n.text("Closed-Lid permission is not installed."))
         }
 
         let record = ClamshellOwnershipRecord(
@@ -88,18 +88,21 @@ final class ClamshellMode {
         do {
             try ownershipStore.write(record)
         } catch {
-            return .failed("Could not create the crash-recovery lease: \(error.localizedDescription)")
+            return .failed(SteamPackL10n.format(
+                "Could not create the crash-recovery lease: %@",
+                error.localizedDescription
+            ))
         }
 
         guard startWatchdog() else {
             ownershipStore.clearIfMatching(token: sessionToken)
-            return .failed("The crash-recovery watchdog could not start.")
+            return .failed(SteamPackL10n.text("The crash-recovery watchdog could not start."))
         }
 
         guard ClamshellWatchdog.runPMSet(enabled: true) else {
             ownershipStore.clearIfMatching(token: sessionToken)
             stopWatchdog()
-            return .failed("macOS rejected the sleep setting.")
+            return .failed(SteamPackL10n.text("macOS rejected the sleep setting."))
         }
 
         isOn = true
@@ -110,7 +113,7 @@ final class ClamshellMode {
     private func disable() -> ToggleResult {
         guard isOn else { return .success }
         guard ClamshellWatchdog.runPMSet(enabled: false) else {
-            return .failed("macOS could not restore normal sleep.")
+            return .failed(SteamPackL10n.text("macOS could not restore normal sleep."))
         }
 
         isOn = false

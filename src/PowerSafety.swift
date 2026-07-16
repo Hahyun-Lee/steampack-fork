@@ -15,9 +15,9 @@ enum PowerSafetyIssue: Equatable, CustomStringConvertible {
     var description: String {
         switch self {
         case .lowBattery(let percent):
-            return "Battery is at \(percent)%"
+            return SteamPackL10n.format("Battery is at %d%%", percent)
         case .highTemperature:
-            return "Mac temperature is too high"
+            return SteamPackL10n.text("Mac temperature is too high")
         }
     }
 }
@@ -137,20 +137,28 @@ enum PowerSafetyNotifier {
 
     static func notifyAutomaticDisarm(_ issue: PowerSafetyIssue) {
         notify(
-            title: "SteamPack restored normal sleep",
-            body: "Clamshell Mode was turned off for safety. \(issue.description)."
+            title: SteamPackL10n.text("SteamPack restored normal sleep"),
+            body: SteamPackL10n.format(
+                "Closed-Lid mode was turned off for safety. %@.",
+                issue.description
+            )
         )
     }
 
     static func notifyWatchdogFailure() {
         notify(
-            title: "SteamPack watchdog stopped",
-            body: "Normal lid-close sleep was restored because crash recovery was no longer available."
+            title: SteamPackL10n.text("SteamPack watchdog stopped"),
+            body: SteamPackL10n.text(
+                "Normal lid-close sleep was restored because crash recovery was no longer available."
+            )
         )
     }
 
     static func notifyControlFailure(_ message: String) {
-        notify(title: "SteamPack could not apply the control", body: message)
+        notify(
+            title: SteamPackL10n.text("SteamPack could not apply the control"),
+            body: message
+        )
     }
 
     private static func notify(title: String, body: String) {

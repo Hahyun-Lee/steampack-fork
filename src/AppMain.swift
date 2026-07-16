@@ -33,7 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startHeartbeat()
 
         clamshellMode.onWatchdogFailure = { [weak self] in
-            self?.lastSafetyEvent = "Watchdog stopped — normal sleep restored"
+            self?.lastSafetyEvent = SteamPackL10n.text(
+                "Watchdog stopped — normal sleep restored"
+            )
             PowerSafetyNotifier.notifyWatchdogFailure()
             self?.updateMenu()
         }
@@ -141,7 +143,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, self.clamshellMode.isOn else { return }
             let result = self.clamshellMode.set(false)
             guard case .success = result else { return }
-            self.lastSafetyEvent = "Safety restored sleep — \(issue.description)"
+            self.lastSafetyEvent = SteamPackL10n.format(
+                "Safety restored sleep — %@",
+                issue.description
+            )
             PowerSafetyNotifier.notifyAutomaticDisarm(issue)
             self.updateMenu()
         }
@@ -150,7 +155,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func enableClamshell() -> ClamshellMode.ToggleResult {
         safetyMonitor.refresh()
         if let issue = PowerSafetyPolicy.issue(for: safetyMonitor.snapshot) {
-            return .failed("Clamshell Mode was blocked for safety. \(issue.description).")
+            return .failed(SteamPackL10n.format(
+                "Closed-Lid mode was blocked for safety. %@.",
+                issue.description
+            ))
         }
 
         PowerSafetyNotifier.prepare()
@@ -220,7 +228,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loginItemMenuItem.target = self
         menu.addItem(loginItemMenuItem)
 
-        let quitItem = NSMenuItem(title: "Quit & Restore Sleep", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(
+            title: SteamPackL10n.text("Quit & Restore Sleep"),
+            action: #selector(quitApp),
+            keyEquivalent: "q"
+        )
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -229,14 +241,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupScheduleMenu(in menu: NSMenu) {
-        scheduledMenuItem = NSMenuItem(title: "Auto-Off Timer", action: nil, keyEquivalent: "")
+        scheduledMenuItem = NSMenuItem(
+            title: SteamPackL10n.text("Auto-Off Timer"),
+            action: nil,
+            keyEquivalent: ""
+        )
         let submenu = NSMenu()
         let durations: [(String, TimeInterval)] = [
-            ("10 Minutes", 10 * 60),
-            ("30 Minutes", 30 * 60),
-            ("1 Hour", 60 * 60),
-            ("2 Hours", 2 * 60 * 60),
-            ("4 Hours", 4 * 60 * 60)
+            (SteamPackL10n.text("10 Minutes"), 10 * 60),
+            (SteamPackL10n.text("30 Minutes"), 30 * 60),
+            (SteamPackL10n.text("1 Hour"), 60 * 60),
+            (SteamPackL10n.text("2 Hours"), 2 * 60 * 60),
+            (SteamPackL10n.text("4 Hours"), 4 * 60 * 60)
         ]
         for (title, seconds) in durations {
             let item = NSMenuItem(title: title, action: #selector(scheduleSleep(_:)), keyEquivalent: "")
@@ -245,7 +261,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             submenu.addItem(item)
         }
         submenu.addItem(.separator())
-        let cancel = NSMenuItem(title: "Cancel Timer", action: #selector(cancelScheduledSleep), keyEquivalent: "")
+        let cancel = NSMenuItem(
+            title: SteamPackL10n.text("Cancel Timer"),
+            action: #selector(cancelScheduledSleep),
+            keyEquivalent: ""
+        )
         cancel.target = self
         submenu.addItem(cancel)
         scheduledMenuItem.submenu = submenu
@@ -260,9 +280,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clamshellMenuItem.title = clamshellText()
         clamshellMenuItem.isEnabled = !clamshellMode.isExternallyDisabled
         authorizationMenuItem.title = clamshellMode.isAuthorized
-            ? "Remove Clamshell Permission…"
-            : "Install Clamshell Permission…"
-        loginItemMenuItem.title = isLoginItemEnabled ? "✓ Start at Login" : "  Start at Login"
+            ? SteamPackL10n.text("Remove Closed-Lid Permission…")
+            : SteamPackL10n.text("Install Closed-Lid Permission…")
+        loginItemMenuItem.title = (isLoginItemEnabled ? "✓ " : "  ")
+            + SteamPackL10n.text("Start at Login")
         updateSafetyMenuItem()
         updateIcon()
         publishState()
@@ -278,38 +299,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let snapshot = safetyMonitor.snapshot
         let power: String
         if snapshot.isOnACPower {
-            power = "AC power"
+            power = SteamPackL10n.text("AC power")
         } else if let percent = snapshot.batteryPercent {
-            power = "Battery \(percent)%"
+            power = SteamPackL10n.format("Battery %d%%", percent)
         } else {
-            power = "Battery"
+            power = SteamPackL10n.text("Battery")
         }
         let temperature: String
         switch snapshot.thermalState {
-        case .nominal: temperature = "temperature normal"
-        case .fair: temperature = "temperature elevated"
-        case .serious, .critical: temperature = "temperature high"
-        @unknown default: temperature = "temperature unknown"
+        case .nominal: temperature = SteamPackL10n.text("temperature normal")
+        case .fair: temperature = SteamPackL10n.text("temperature elevated")
+        case .serious, .critical: temperature = SteamPackL10n.text("temperature high")
+        @unknown default: temperature = SteamPackL10n.text("temperature unknown")
         }
-        safetyMenuItem.title = "Safety: \(power) · \(temperature) · auto-off at 20%"
+        safetyMenuItem.title = SteamPackL10n.format(
+            "Safety: %@ · %@ · auto-off at 20%%",
+            power,
+            temperature
+        )
     }
 
     private func statusText() -> String {
         if let endDate = timerEndDate {
             let remaining = max(0, Int(endDate.timeIntervalSinceNow))
-            return "Auto-off in \(formatDuration(remaining))"
+            return SteamPackL10n.format("Auto-off in %@", formatDuration(remaining))
         }
-        if clamshellMode.isOn { return "Clamshell Mode — crash guard armed" }
-        if clamshellMode.isExternallyDisabled { return "Sleep is disabled by another app or command" }
-        return sleepToggle.isDisableSleep ? "Keep Awake — lid open" : "Normal Sleep"
+        if clamshellMode.isOn {
+            return SteamPackL10n.text("Closed Lid — crash guard armed")
+        }
+        if clamshellMode.isExternallyDisabled {
+            return SteamPackL10n.text("Sleep is disabled by another app or command")
+        }
+        return SteamPackL10n.text(
+            sleepToggle.isDisableSleep ? "Keep Awake — lid open" : "Normal Sleep"
+        )
     }
 
     private func keepAwakeText() -> String {
-        (sleepToggle.isDisableSleep || clamshellMode.isOn) ? "Turn Keep Awake Off" : "Turn Keep Awake On"
+        SteamPackL10n.text(
+            (sleepToggle.isDisableSleep || clamshellMode.isOn)
+                ? "Turn Keep Awake Off"
+                : "Turn Keep Awake On"
+        )
     }
 
     private func clamshellText() -> String {
-        clamshellMode.isOn ? "✓ Clamshell Mode (Closed Lid)" : "  Clamshell Mode (Closed Lid)"
+        (clamshellMode.isOn ? "✓ " : "  ")
+            + SteamPackL10n.text("Keep Working with Lid Closed")
     }
 
     private func updateIcon() {
@@ -364,7 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cancelTimerWithoutUpdating()
         let result = clamshellMode.isOn ? clamshellMode.set(false) : enableClamshell()
         if case .failed(let message) = result {
-            showAlert(title: "Clamshell Mode", message: message)
+            showAlert(title: SteamPackL10n.text("Closed-Lid Mode"), message: message)
         }
         updateMenu()
     }
@@ -372,27 +408,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleClamshellAuthorization() {
         if clamshellMode.isAuthorized {
             if clamshellMode.isOn, case .failed(let message) = clamshellMode.set(false) {
-                showAlert(title: "Clamshell Permission", message: message)
+                showAlert(title: SteamPackL10n.text("Closed-Lid Permission"), message: message)
                 return
             }
             let alert = NSAlert()
-            alert.messageText = "Remove Clamshell permission?"
-            alert.informativeText = "Keep Awake will continue to work, but closed-lid mode will be unavailable."
-            alert.addButton(withTitle: "Remove")
-            alert.addButton(withTitle: "Cancel")
+            alert.messageText = SteamPackL10n.text("Remove Closed-Lid permission?")
+            alert.informativeText = SteamPackL10n.text(
+                "Keep Awake will continue to work, but closed-lid mode will be unavailable."
+            )
+            alert.addButton(withTitle: SteamPackL10n.text("Remove"))
+            alert.addButton(withTitle: SteamPackL10n.text("Cancel"))
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             if case .failure(let error) = ClamshellAuthorization.remove() {
-                showAlert(title: "Clamshell Permission", message: error.localizedDescription)
+                showAlert(
+                    title: SteamPackL10n.text("Closed-Lid Permission"),
+                    message: error.localizedDescription
+                )
             }
         } else {
             let alert = NSAlert()
-            alert.messageText = "Install restricted Clamshell permission?"
-            alert.informativeText = "SteamPack will ask macOS once for administrator approval. The installed rule permits only the two exact pmset commands that turn closed-lid sleep prevention on and off."
-            alert.addButton(withTitle: "Install")
-            alert.addButton(withTitle: "Cancel")
+            alert.messageText = SteamPackL10n.text(
+                "Install restricted Closed-Lid permission?"
+            )
+            alert.informativeText = SteamPackL10n.text(
+                "SteamPack will ask macOS once for administrator approval. The installed rule permits only the two exact pmset commands that turn closed-lid sleep prevention on and off."
+            )
+            alert.addButton(withTitle: SteamPackL10n.text("Install"))
+            alert.addButton(withTitle: SteamPackL10n.text("Cancel"))
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             if case .failure(let error) = ClamshellAuthorization.install() {
-                showAlert(title: "Clamshell Permission", message: error.localizedDescription)
+                showAlert(
+                    title: SteamPackL10n.text("Closed-Lid Permission"),
+                    message: error.localizedDescription
+                )
             }
         }
         updateMenu()
@@ -447,7 +495,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try SMAppService.mainApp.register()
             }
         } catch {
-            showAlert(title: "Start at Login", message: error.localizedDescription)
+            showAlert(
+                title: SteamPackL10n.text("Start at Login"),
+                message: error.localizedDescription
+            )
         }
         updateMenu()
     }
@@ -457,7 +508,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: SteamPackL10n.text("OK"))
         alert.runModal()
     }
 

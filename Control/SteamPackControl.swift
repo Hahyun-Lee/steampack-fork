@@ -32,7 +32,7 @@ struct KeepAwakeControl: ControlWidget {
                 isOn: isOn,
                 action: SetKeepAwakeIntent()
             ) { on in
-                Label(on ? "Awake" : "Sleep OK",
+                Label(SteamPackL10n.text(on ? "Awake" : "Sleep OK"),
                       systemImage: on ? "eye.fill" : "eye.half.closed.fill")
             }
             .tint(.indigo)
@@ -45,8 +45,8 @@ struct KeepAwakeControl: ControlWidget {
 // MARK: - Clamshell (pmset disablesleep) 토글
 
 struct SetClamshellIntent: SetValueIntent {
-    static let title: LocalizedStringResource = "Clamshell Mode"
-    @Parameter(title: "Clamshell Mode") var value: Bool
+    static let title: LocalizedStringResource = "Closed Lid"
+    @Parameter(title: "Closed Lid") var value: Bool
     init() {}
     func perform() async throws -> some IntentResult {
         guard SteamPackShared.requestClamshell(value) else {
@@ -68,17 +68,17 @@ struct ClamshellControl: ControlWidget {
             provider: ClamshellProvider()
         ) { isOn in
             ControlWidgetToggle(
-                "Clamshell",
+                "Closed Lid",
                 isOn: isOn,
                 action: SetClamshellIntent()
             ) { on in
-                Label(on ? "Clamshell On" : "Clamshell Off",
+                Label(SteamPackL10n.text(on ? "Closed Lid On" : "Closed Lid Off"),
                       systemImage: on ? "laptopcomputer" : "laptopcomputer.slash")
             }
             .tint(.orange)
         }
-        .displayName("SteamPack Clamshell")
-        .description("Keep awake with lid closed (battery too).")
+        .displayName("SteamPack Closed Lid")
+        .description("Keep working after you close the lid, even on battery.")
     }
 }
 
