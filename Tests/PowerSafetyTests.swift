@@ -5,7 +5,7 @@ final class PowerSafetyTests: XCTestCase {
     func testLowBatteryOnBatteryDisarmsAtThreshold() {
         let snapshot = PowerSafetySnapshot(
             batteryPercent: 20,
-            isOnACPower: false,
+            powerConnection: .battery,
             thermalState: .nominal
         )
         XCTAssertEqual(PowerSafetyPolicy.issue(for: snapshot), .lowBattery(percent: 20))
@@ -14,7 +14,7 @@ final class PowerSafetyTests: XCTestCase {
     func testLowBatteryDoesNotDisarmOnACPower() {
         let snapshot = PowerSafetySnapshot(
             batteryPercent: 5,
-            isOnACPower: true,
+            powerConnection: .acPower,
             thermalState: .nominal
         )
         XCTAssertNil(PowerSafetyPolicy.issue(for: snapshot))
@@ -23,7 +23,7 @@ final class PowerSafetyTests: XCTestCase {
     func testSeriousThermalStateAlwaysDisarms() {
         let snapshot = PowerSafetySnapshot(
             batteryPercent: 100,
-            isOnACPower: true,
+            powerConnection: .acPower,
             thermalState: .serious
         )
         XCTAssertEqual(PowerSafetyPolicy.issue(for: snapshot), .highTemperature)
@@ -32,9 +32,45 @@ final class PowerSafetyTests: XCTestCase {
     func testFairThermalStateIsAllowed() {
         let snapshot = PowerSafetySnapshot(
             batteryPercent: 80,
-            isOnACPower: false,
+            powerConnection: .battery,
             thermalState: .fair
         )
+        XCTAssertNil(PowerSafetyPolicy.issue(for: snapshot))
+    }
+
+    func testUnknownPowerSourceIsUnsafe() {
+        let snapshot = PowerSafetySnapshot(
+            batteryPercent: 80,
+            powerConnection: .unknown,
+            thermalState: .nominal
+        )
+
+        XCTAssertEqual(
+            PowerSafetyPolicy.issue(for: snapshot),
+            .powerSourceUnavailable
+        )
+    }
+
+    func testMissingBatteryCapacityIsUnsafeWhileUnplugged() {
+        let snapshot = PowerSafetySnapshot(
+            batteryPercent: nil,
+            powerConnection: .battery,
+            thermalState: .nominal
+        )
+
+        XCTAssertEqual(
+            PowerSafetyPolicy.issue(for: snapshot),
+            .batteryLevelUnavailable
+        )
+    }
+
+    func testMissingBatteryCapacityRemainsAllowedOnConfirmedACPower() {
+        let snapshot = PowerSafetySnapshot(
+            batteryPercent: nil,
+            powerConnection: .acPower,
+            thermalState: .nominal
+        )
+
         XCTAssertNil(PowerSafetyPolicy.issue(for: snapshot))
     }
 }

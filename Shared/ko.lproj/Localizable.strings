@@ -13,7 +13,9 @@
 
 /* Menu and status */
 "Watchdog stopped — normal sleep restored" = "강제 종료 보호 중단 — 정상 잠자기로 복구됨";
+"Watchdog stopped — normal sleep could not be restored" = "강제 종료 보호 중단 — 정상 잠자기를 복구하지 못함";
 "Safety restored sleep — %@" = "안전 보호 작동 — 정상 잠자기로 복구됨 · %@";
+"Safety could not restore normal sleep" = "안전 보호가 정상 잠자기를 복구하지 못함";
 "Closed-Lid mode was blocked for safety. %@." = "안전을 위해 덮개 닫기 모드를 켜지 않았습니다. %@.";
 "Quit & Restore Sleep" = "종료하고 정상 잠자기로 복구";
 "Auto-Off Timer" = "자동 종료 타이머";
@@ -29,6 +31,8 @@
 "AC power" = "전원 연결";
 "Battery %d%%" = "배터리 %d%%";
 "Battery" = "배터리";
+"Battery level unknown" = "배터리 잔량 확인 불가";
+"Power source unknown" = "전원 상태 확인 불가";
 "temperature normal" = "온도 정상";
 "temperature elevated" = "온도 상승";
 "temperature high" = "온도 높음";
@@ -37,6 +41,7 @@
 "Auto-off in %@" = "%@ 후 자동 종료";
 "Closed Lid — crash guard armed" = "덮개를 닫아도 계속 실행 — 강제 종료 보호 켜짐";
 "Sleep is disabled by another app or command" = "다른 앱 또는 명령이 잠자기를 막고 있음";
+"Could not verify the macOS sleep setting" = "macOS 잠자기 설정을 확인할 수 없음";
 "Keep Awake — lid open" = "잠자기 방지 — 덮개 열림";
 "Normal Sleep" = "정상 잠자기";
 "Turn Keep Awake Off" = "잠자기 방지 끄기";
@@ -57,7 +62,11 @@
 
 /* Clamshell errors */
 "Sleep is already disabled by another app or command." = "다른 앱 또는 명령이 이미 잠자기를 막고 있습니다.";
+"Could not verify the macOS sleep setting. Closed Lid was not enabled." = "macOS 잠자기 설정을 확인할 수 없어 덮개 닫기 모드를 켜지 않았습니다.";
 "Closed-Lid permission is not installed." = "덮개 닫기 권한이 설치되지 않았습니다.";
+"Closed Lid is already controlled by another SteamPack session." = "다른 SteamPack 실행이 이미 덮개 닫기 모드를 제어하고 있습니다.";
+"A previous Closed Lid session still needs recovery. Reinstall the Closed-Lid permission and try again." = "이전 덮개 닫기 세션을 아직 복구해야 합니다. 덮개 닫기 권한을 다시 설치한 뒤 시도하세요.";
+"SteamPack could not safely recover the previous Closed Lid session." = "SteamPack이 이전 덮개 닫기 세션을 안전하게 복구하지 못했습니다.";
 "Could not create the crash-recovery lease: %@" = "강제 종료 복구 연결을 만들 수 없습니다: %@";
 "The crash-recovery watchdog could not start." = "강제 종료 보호 프로세스를 시작할 수 없습니다.";
 "macOS rejected the sleep setting." = "macOS가 잠자기 설정을 허용하지 않았습니다.";
@@ -66,11 +75,19 @@
 /* Power safety and notifications */
 "Battery is at %d%%" = "배터리가 %d%% 남음";
 "Mac temperature is too high" = "Mac 온도가 너무 높음";
+"Power source could not be verified" = "전원 연결 상태를 확인할 수 없음";
+"Battery level could not be verified" = "배터리 잔량을 확인할 수 없음";
 "SteamPack restored normal sleep" = "SteamPack이 정상 잠자기를 복구했습니다";
 "Closed-Lid mode was turned off for safety. %@." = "안전을 위해 덮개 닫기 모드를 껐습니다. %@.";
 "SteamPack watchdog stopped" = "SteamPack 강제 종료 보호가 중단되었습니다";
 "Normal lid-close sleep was restored because crash recovery was no longer available." = "강제 종료 복구를 사용할 수 없어 덮개를 닫을 때 정상적으로 잠자도록 복구했습니다.";
+"SteamPack could not restore normal sleep" = "SteamPack이 정상 잠자기를 복구하지 못했습니다";
+"Closed-Lid sleep prevention may still be active. Reinstall the Closed-Lid permission, then open SteamPack to retry recovery." = "덮개 닫기 잠자기 방지가 아직 켜져 있을 수 있습니다. 덮개 닫기 권한을 다시 설치한 뒤 SteamPack을 열어 복구를 다시 시도하세요.";
 "SteamPack could not apply the control" = "SteamPack이 설정을 적용하지 못했습니다";
+"SteamPack could not save the requested state. The app will retry." = "SteamPack이 요청 상태를 저장하지 못했습니다. 앱이 다시 시도합니다.";
+"Requested state could not be saved — retrying" = "요청 상태를 저장하지 못함 — 다시 시도 중";
+"SteamPack could not publish its applied state. Control Center may be stale; the app will retry." = "SteamPack이 적용 상태를 게시하지 못했습니다. 제어 센터에 이전 상태가 보일 수 있으며 앱이 다시 시도합니다.";
+"Applied state could not be published — retrying" = "적용 상태를 게시하지 못함 — 다시 시도 중";
 
 /* Authorization errors */
 "Could not create authorization prompt" = "관리자 승인 창을 만들 수 없습니다";

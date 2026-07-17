@@ -2,6 +2,24 @@ import Cocoa
 import ServiceManagement
 import WidgetKit
 
+enum SteamPackRuntimeRefreshPolicy {
+    static let heartbeatInterval: TimeInterval = 2
+    static let fullStateInterval: TimeInterval = 10
+
+    static func shouldPersistRuntimeChange(
+        from previous: SteamPackControlPolicy.DesiredMode,
+        to current: SteamPackControlPolicy.DesiredMode
+    ) -> Bool {
+        previous != current
+    }
+
+    static func shouldCancelAutoOff(
+        after mode: SteamPackControlPolicy.DesiredMode
+    ) -> Bool {
+        mode == .normalSleep
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var statusItem: NSStatusItem!
     let sleepToggle = SleepToggle()
@@ -20,24 +38,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var timerEndDate: Date?
     private var countdownTimer: Timer?
     private var heartbeatTimer: Timer?
+    private var stateRefreshTimer: Timer?
     private var lastSafetyEvent: String?
+    private var localIntentBarrier = SteamPackLocalIntentBarrier()
+    private var lastAcceptedControlRevision: UInt64 = 0
+    private var localIntentRetryWorkItem: DispatchWorkItem?
+    private var localIntentPersistenceFailed = false
+    private var appliedStatePersistenceFailed = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         ProcessInfo.processInfo.disableSuddenTermination()
+        // Never let a still-fresh marker from a prior crash make Control Center
+        // revive that process's last applied state during launch initialization.
+        SteamPackShared.clearHeartbeat()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         setupMenu()
         registerControlObservers()
         configureSafety()
-        startHeartbeat()
+        lastAcceptedControlRevision = SteamPackShared.readControlRequest().revision
+        syncLocalControlIntent()
+        startStatePublishing()
 
-        clamshellMode.onWatchdogFailure = { [weak self] in
-            self?.lastSafetyEvent = SteamPackL10n.text(
-                "Watchdog stopped — normal sleep restored"
-            )
-            PowerSafetyNotifier.notifyWatchdogFailure()
-            self?.updateMenu()
+        clamshellMode.onWatchdogFailure = { [weak self] restored in
+            guard let self else { return }
+            self.lastSafetyEvent = restored
+                ? SteamPackL10n.text("Watchdog stopped — normal sleep restored")
+                : SteamPackL10n.text("Watchdog stopped — normal sleep could not be restored")
+            self.cancelAutoOffIfRuntimeIsNormal()
+            self.syncLocalControlIntent()
+            if restored {
+                PowerSafetyNotifier.notifyWatchdogFailure()
+            } else {
+                PowerSafetyNotifier.notifyWatchdogRestoreFailure()
+            }
+            self.updateMenu()
+        }
+        sleepToggle.onStateChange = { [weak self] in
+            guard let self else { return }
+            self.cancelAutoOffIfRuntimeIsNormal()
+            self.syncLocalControlIntent()
+            self.updateMenu()
         }
 
         safetyMonitor.start()
@@ -47,41 +89,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Control Center
 
     func onKeepAwakeRequest() {
-        let requested = SteamPackShared.readRequestedKeepAwake()
-        if requested {
-            let wantsClamshell = SteamPackShared.readRequestedClamshell()
-            if wantsClamshell {
-                switch enableClamshell() {
-                case .success:
-                    break
-                case .failed(let message):
-                    PowerSafetyNotifier.notifyControlFailure(message)
-                }
-            } else if !sleepToggle.isDisableSleep {
-                _ = sleepToggle.toggle()
-            }
-        } else {
-            stopAllKeepAwakeModes()
-        }
-        updateMenu()
+        reconcileControlRequests()
     }
 
     func onClamshellRequest() {
-        let requested = SteamPackShared.readRequestedClamshell()
-        if requested {
+        reconcileControlRequests()
+    }
+
+    private func reconcileControlRequests() {
+        // Notifications carry no payload. Reading one atomically replaced record
+        // means even an older notification delivered late reconciles the newest
+        // complete request, never a mix of two requests.
+        let request = SteamPackShared.readControlRequest()
+        defer { finishControlReconciliation(requestedRevision: request.revision) }
+        let resolution = localIntentBarrier.resolve(request)
+        if resolution.acceptedIncomingRequest {
+            lastAcceptedControlRevision = max(lastAcceptedControlRevision, request.revision)
+            localIntentRetryWorkItem?.cancel()
+            localIntentRetryWorkItem = nil
+            localIntentPersistenceFailed = false
+        }
+        let desiredMode = resolution.mode
+
+        switch desiredMode {
+        case .normalSleep:
+            let report = stopAllKeepAwakeModes()
+            cancelAutoOffIfRuntimeIsNormal()
+            report.failures.forEach(PowerSafetyNotifier.notifyControlFailure)
+
+        case .keepAwake:
+            if clamshellMode.isOn {
+                let result = clamshellMode.set(false)
+                if case .failed(let message) = result {
+                    PowerSafetyNotifier.notifyControlFailure(message)
+                    return
+                }
+            }
+            if !sleepToggle.isDisableSleep,
+               case .failed(let message) = sleepToggle.toggle() {
+                cancelAutoOffIfRuntimeIsNormal()
+                PowerSafetyNotifier.notifyControlFailure(message)
+            }
+
+        case .closedLid:
             switch enableClamshell() {
             case .success:
                 break
             case .failed(let message):
                 PowerSafetyNotifier.notifyControlFailure(message)
             }
-        } else {
-            let result = clamshellMode.set(false)
-            if case .success = result, !sleepToggle.isDisableSleep {
-                _ = sleepToggle.toggle()
-            }
         }
+    }
+
+    private func finishControlReconciliation(requestedRevision: UInt64) {
         updateMenu()
+        guard SteamPackShared.readControlRequest().revision > requestedRevision else { return }
+        // A newer request arrived while the older one was being applied. Reconcile
+        // it even if Darwin notifications were coalesced or delivered out of order.
+        DispatchQueue.main.async { [weak self] in
+            self?.reconcileControlRequests()
+        }
     }
 
     private func registerControlObservers() {
@@ -113,24 +180,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    private func startHeartbeat() {
-        SteamPackShared.publishHeartbeat()
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
-            SteamPackShared.publishHeartbeat()
+    private func startStatePublishing() {
+        publishState(reloadControls: false)
+        heartbeatTimer = Timer.scheduledTimer(
+            withTimeInterval: SteamPackRuntimeRefreshPolicy.heartbeatInterval,
+            repeats: true
+        ) { [weak self] _ in
+            self?.publishState(reloadControls: false)
+        }
+        stateRefreshTimer = Timer.scheduledTimer(
+            withTimeInterval: SteamPackRuntimeRefreshPolicy.fullStateInterval,
+            repeats: true
+        ) { [weak self] _ in
+            self?.periodicFullStateRefresh()
         }
     }
 
-    private func publishState() {
-        SteamPackShared.publishApplied(
+    private func periodicFullStateRefresh() {
+        refreshRuntimeState()
+        safetyMonitor.refresh()
+        updateMenu(refreshRuntimeState: false)
+    }
+
+    private func refreshRuntimeState() {
+        let previousMode = currentRuntimeMode()
+        sleepToggle.refresh()
+        clamshellMode.refresh()
+        let currentMode = currentRuntimeMode()
+        guard SteamPackRuntimeRefreshPolicy.shouldPersistRuntimeChange(
+            from: previousMode,
+            to: currentMode
+        ) else { return }
+
+        if SteamPackRuntimeRefreshPolicy.shouldCancelAutoOff(after: currentMode) {
+            cancelTimerWithoutUpdating()
+        }
+        // An external pmset change or component exit is authoritative. Persist
+        // the complete post-refresh mode before a delayed/coalesced Control
+        // Center notification can read and replay an older request. Comparing
+        // modes (not just aggregate ON/OFF) also covers Closed Lid -> Keep Awake.
+        persistLocalIntent(currentMode)
+    }
+
+    private func publishState(reloadControls: Bool = true) {
+        let published = SteamPackShared.publishApplied(
             keepAwake: sleepToggle.isDisableSleep || clamshellMode.isOn,
             clamshell: clamshellMode.isOn
         )
+        handleAppliedStatePublication(published)
+        guard reloadControls else { return }
+        reloadControlCenterState()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.reloadControlCenterState()
+        }
+    }
+
+    private func reloadControlCenterState() {
+        // Per-kind reloads target both controls; reloadAllControls is the
+        // strongest additional invalidation API exposed by WidgetKit for
+        // Control Widgets. WidgetCenter timeline reloads apply to widgets, not
+        // ControlValueProvider state, so they are intentionally not used here.
         ControlCenter.shared.reloadControls(ofKind: SteamPackShared.keepAwakeKind)
         ControlCenter.shared.reloadControls(ofKind: SteamPackShared.clamshellKind)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            ControlCenter.shared.reloadControls(ofKind: SteamPackShared.keepAwakeKind)
-            ControlCenter.shared.reloadControls(ofKind: SteamPackShared.clamshellKind)
+        ControlCenter.shared.reloadAllControls()
+    }
+
+    private func handleAppliedStatePublication(_ succeeded: Bool) {
+        if succeeded {
+            guard appliedStatePersistenceFailed else { return }
+            appliedStatePersistenceFailed = false
+            updateSafetyMenuItem()
+            updateIcon()
+            return
         }
+
+        if !appliedStatePersistenceFailed {
+            appliedStatePersistenceFailed = true
+            PowerSafetyNotifier.notifyControlFailure(SteamPackL10n.text(
+                "SteamPack could not publish its applied state. Control Center may be stale; the app will retry."
+            ))
+        }
+        updateSafetyMenuItem()
+        updateIcon()
     }
 
     // MARK: - Safety
@@ -141,8 +272,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         safetyMonitor.onUnsafe = { [weak self] issue in
             guard let self, self.clamshellMode.isOn else { return }
+            self.recordLocalOffIntent()
             let result = self.clamshellMode.set(false)
-            guard case .success = result else { return }
+            if case .failed(let message) = result {
+                self.lastSafetyEvent = SteamPackL10n.text(
+                    "Safety could not restore normal sleep"
+                )
+                PowerSafetyNotifier.notifyControlFailure(message)
+                self.updateMenu()
+                return
+            }
+            self.cancelAutoOffIfRuntimeIsNormal()
+            self.syncLocalControlIntent()
             self.lastSafetyEvent = SteamPackL10n.format(
                 "Safety restored sleep — %@",
                 issue.description
@@ -169,12 +310,154 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return result
     }
 
-    private func stopAllKeepAwakeModes() {
+    @discardableResult
+    private func stopAllKeepAwakeModes() -> SteamPackStopReport {
+        var attempts: [SteamPackStopAttempt] = []
         if sleepToggle.isDisableSleep {
-            _ = sleepToggle.toggle()
+            switch sleepToggle.toggle() {
+            case .success: attempts.append(.success)
+            case .failed(let message): attempts.append(.failed(message))
+            }
         }
         if clamshellMode.isOn {
-            _ = clamshellMode.set(false)
+            switch clamshellMode.set(false) {
+            case .success: attempts.append(.success)
+            case .failed(let message): attempts.append(.failed(message))
+            }
+        }
+        return SteamPackStopReport(attempts: attempts)
+    }
+
+    @discardableResult
+    private func syncLocalControlIntent() -> Bool {
+        persistLocalIntent(currentRuntimeMode())
+    }
+
+    private func currentRuntimeMode() -> SteamPackControlPolicy.DesiredMode {
+        if clamshellMode.isOn {
+            return .closedLid
+        } else if sleepToggle.isDisableSleep {
+            return .keepAwake
+        }
+        return .normalSleep
+    }
+
+    private func cancelAutoOffIfRuntimeIsNormal() {
+        if SteamPackRuntimeRefreshPolicy.shouldCancelAutoOff(
+            after: currentRuntimeMode()
+        ) {
+            cancelTimerWithoutUpdating()
+        }
+    }
+
+    @discardableResult
+    private func recordLocalOffIntent() -> Bool {
+        persistLocalIntent(.normalSleep)
+    }
+
+    @discardableResult
+    private func persistLocalIntent(
+        _ mode: SteamPackControlPolicy.DesiredMode
+    ) -> Bool {
+        let currentRequest = SteamPackShared.readControlRequest()
+        let protectedRevision = max(
+            lastAcceptedControlRevision,
+            currentRequest.revision
+        )
+        localIntentBarrier.begin(mode, throughRevision: protectedRevision)
+
+        switch writeLocalIntent(mode, ifCurrentRevisionAtMost: protectedRevision) {
+        case .written(let persisted):
+            _ = localIntentBarrier.markPersisted(persisted)
+            lastAcceptedControlRevision = max(lastAcceptedControlRevision, persisted.revision)
+            localIntentRetryWorkItem?.cancel()
+            localIntentRetryWorkItem = nil
+            localIntentPersistenceFailed = false
+            return true
+        case .conflict(let newerRequest):
+            acceptNewerControlRequest(newerRequest)
+            return false
+        case .failed:
+            handleLocalIntentPersistenceFailure()
+            return false
+        }
+    }
+
+    private func writeLocalIntent(
+        _ mode: SteamPackControlPolicy.DesiredMode,
+        ifCurrentRevisionAtMost maximumRevision: UInt64
+    ) -> SteamPackControlWriteResult {
+        switch mode {
+        case .normalSleep:
+            return SteamPackShared.compareAndResetControlRequest(
+                keepAwake: false,
+                clamshell: false,
+                ifCurrentRevisionAtMost: maximumRevision
+            )
+        case .keepAwake:
+            return SteamPackShared.compareAndResetControlRequest(
+                keepAwake: true,
+                clamshell: false,
+                ifCurrentRevisionAtMost: maximumRevision
+            )
+        case .closedLid:
+            return SteamPackShared.compareAndResetControlRequest(
+                keepAwake: true,
+                clamshell: true,
+                ifCurrentRevisionAtMost: maximumRevision
+            )
+        }
+    }
+
+    private func handleLocalIntentPersistenceFailure() {
+        if !localIntentPersistenceFailed {
+            localIntentPersistenceFailed = true
+            PowerSafetyNotifier.notifyControlFailure(SteamPackL10n.text(
+                "SteamPack could not save the requested state. The app will retry."
+            ))
+        }
+        scheduleLocalIntentPersistenceRetry()
+    }
+
+    private func scheduleLocalIntentPersistenceRetry() {
+        localIntentRetryWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.retryLocalIntentPersistence()
+        }
+        localIntentRetryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: workItem)
+    }
+
+    private func retryLocalIntentPersistence() {
+        localIntentRetryWorkItem = nil
+        guard let pending = localIntentBarrier.pendingIntent else { return }
+
+        switch writeLocalIntent(
+            pending.mode,
+            ifCurrentRevisionAtMost: pending.throughRevision
+        ) {
+        case .written(let persisted):
+            _ = localIntentBarrier.markPersisted(persisted)
+            lastAcceptedControlRevision = max(lastAcceptedControlRevision, persisted.revision)
+            localIntentPersistenceFailed = false
+            updateMenu()
+        case .conflict(let newerRequest):
+            acceptNewerControlRequest(newerRequest)
+        case .failed:
+            handleLocalIntentPersistenceFailure()
+            updateMenu()
+        }
+    }
+
+    private func acceptNewerControlRequest(_ request: SteamPackControlRequest) {
+        let resolution = localIntentBarrier.resolve(request)
+        guard resolution.acceptedIncomingRequest else { return }
+        lastAcceptedControlRevision = max(lastAcceptedControlRevision, request.revision)
+        localIntentRetryWorkItem?.cancel()
+        localIntentRetryWorkItem = nil
+        localIntentPersistenceFailed = false
+        DispatchQueue.main.async { [weak self] in
+            self?.reconcileControlRequests()
         }
     }
 
@@ -272,9 +555,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(scheduledMenuItem)
     }
 
-    private func updateMenu() {
-        sleepToggle.refresh()
-        clamshellMode.refresh()
+    private func updateMenu(refreshRuntimeState: Bool = true) {
+        if refreshRuntimeState {
+            self.refreshRuntimeState()
+        }
         statusMenuItem.title = statusText()
         toggleMenuItem.title = keepAwakeText()
         clamshellMenuItem.title = clamshellText()
@@ -295,15 +579,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             safetyMenuItem.title = "⚠ \(lastSafetyEvent)"
             return
         }
+        if localIntentPersistenceFailed {
+            safetyMenuItem.title = "⚠ " + SteamPackL10n.text(
+                "Requested state could not be saved — retrying"
+            )
+            return
+        }
+        if appliedStatePersistenceFailed {
+            safetyMenuItem.title = "⚠ " + SteamPackL10n.text(
+                "Applied state could not be published — retrying"
+            )
+            return
+        }
 
         let snapshot = safetyMonitor.snapshot
         let power: String
-        if snapshot.isOnACPower {
+        switch snapshot.powerConnection {
+        case .acPower:
             power = SteamPackL10n.text("AC power")
-        } else if let percent = snapshot.batteryPercent {
-            power = SteamPackL10n.format("Battery %d%%", percent)
-        } else {
-            power = SteamPackL10n.text("Battery")
+        case .battery:
+            if let percent = snapshot.batteryPercent {
+                power = SteamPackL10n.format("Battery %d%%", percent)
+            } else {
+                power = SteamPackL10n.text("Battery level unknown")
+            }
+        case .unknown:
+            power = SteamPackL10n.text("Power source unknown")
         }
         let temperature: String
         switch snapshot.thermalState {
@@ -323,6 +624,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let endDate = timerEndDate {
             let remaining = max(0, Int(endDate.timeIntervalSinceNow))
             return SteamPackL10n.format("Auto-off in %@", formatDuration(remaining))
+        }
+        if clamshellMode.isSystemStatusUnknown {
+            return SteamPackL10n.text("Could not verify the macOS sleep setting")
         }
         if clamshellMode.isOn {
             return SteamPackL10n.text("Closed Lid — crash guard armed")
@@ -350,7 +654,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateIcon() {
         let symbol: String
-        if lastSafetyEvent != nil {
+        if lastSafetyEvent != nil
+            || localIntentPersistenceFailed
+            || appliedStatePersistenceFailed {
             symbol = "exclamationmark.triangle.fill"
         } else if sleepTimer != nil {
             symbol = "hourglass.badge.eye"
@@ -388,9 +694,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastSafetyEvent = nil
         cancelTimerWithoutUpdating()
         if sleepToggle.isDisableSleep || clamshellMode.isOn {
-            stopAllKeepAwakeModes()
+            recordLocalOffIntent()
+            let report = stopAllKeepAwakeModes()
+            if !report.failures.isEmpty {
+                showAlert(
+                    title: SteamPackL10n.text("Keep Awake"),
+                    message: report.failures.joined(separator: "\n")
+                )
+            }
         } else {
-            _ = sleepToggle.toggle()
+            switch sleepToggle.toggle() {
+            case .success:
+                syncLocalControlIntent()
+            case .failed(let message):
+                showAlert(title: SteamPackL10n.text("Keep Awake"), message: message)
+            }
         }
         updateMenu()
     }
@@ -398,18 +716,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleClamshell() {
         lastSafetyEvent = nil
         cancelTimerWithoutUpdating()
-        let result = clamshellMode.isOn ? clamshellMode.set(false) : enableClamshell()
+        let wasOn = clamshellMode.isOn
+        if wasOn { recordLocalOffIntent() }
+        let result = wasOn ? clamshellMode.set(false) : enableClamshell()
         if case .failed(let message) = result {
             showAlert(title: SteamPackL10n.text("Closed-Lid Mode"), message: message)
+        } else if !wasOn {
+            syncLocalControlIntent()
         }
         updateMenu()
     }
 
     @objc private func toggleClamshellAuthorization() {
         if clamshellMode.isAuthorized {
-            if clamshellMode.isOn, case .failed(let message) = clamshellMode.set(false) {
-                showAlert(title: SteamPackL10n.text("Closed-Lid Permission"), message: message)
-                return
+            if clamshellMode.isOn {
+                recordLocalOffIntent()
+                if case .failed(let message) = clamshellMode.set(false) {
+                    showAlert(title: SteamPackL10n.text("Closed-Lid Permission"), message: message)
+                    return
+                }
+                cancelAutoOffIfRuntimeIsNormal()
+                syncLocalControlIntent()
+                // The permission confirmation can still be cancelled, but Closed
+                // Lid has already been turned off successfully and its OFF intent
+                // was recorded before changing the system setting.
             }
             let alert = NSAlert()
             alert.messageText = SteamPackL10n.text("Remove Closed-Lid permission?")
@@ -418,7 +748,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             alert.addButton(withTitle: SteamPackL10n.text("Remove"))
             alert.addButton(withTitle: SteamPackL10n.text("Cancel"))
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            guard alert.runModal() == .alertFirstButtonReturn else {
+                updateMenu()
+                return
+            }
             if case .failure(let error) = ClamshellAuthorization.remove() {
                 showAlert(
                     title: SteamPackL10n.text("Closed-Lid Permission"),
@@ -449,7 +782,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func scheduleSleep(_ sender: NSMenuItem) {
         lastSafetyEvent = nil
         if !sleepToggle.isDisableSleep && !clamshellMode.isOn {
-            guard case .success = sleepToggle.toggle() else { return }
+            if case .failed(let message) = sleepToggle.toggle() {
+                showAlert(title: SteamPackL10n.text("Auto-Off Timer"), message: message)
+                return
+            }
         }
         cancelTimerWithoutUpdating()
 
@@ -461,6 +797,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             self?.updateIcon()
         }
+        syncLocalControlIntent()
         updateMenu()
     }
 
@@ -479,7 +816,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func timerFired() {
         cancelTimerWithoutUpdating()
-        stopAllKeepAwakeModes()
+        recordLocalOffIntent()
+        let report = stopAllKeepAwakeModes()
+        if !report.failures.isEmpty {
+            report.failures.forEach(PowerSafetyNotifier.notifyControlFailure)
+        }
         updateMenu()
     }
 
@@ -518,11 +859,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         heartbeatTimer?.invalidate()
+        stateRefreshTimer?.invalidate()
         safetyMonitor.stop()
         cancelTimerWithoutUpdating()
-        stopAllKeepAwakeModes()
+        let report = stopAllKeepAwakeModes()
+        report.failures.forEach(PowerSafetyNotifier.notifyControlFailure)
+        _ = recordLocalOffIntent()
+        localIntentRetryWorkItem?.cancel()
+        localIntentRetryWorkItem = nil
         SteamPackShared.publishApplied(keepAwake: false, clamshell: false)
         SteamPackShared.clearHeartbeat()
+        // Graceful termination can explicitly invalidate visible Control
+        // Center state. A crash cannot execute this path and remains part of
+        // the required installed-build E2E matrix.
+        reloadControlCenterState()
         ProcessInfo.processInfo.enableSuddenTermination()
     }
 }

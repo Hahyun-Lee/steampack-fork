@@ -2,15 +2,23 @@ import Foundation
 import IOKit.ps
 import UserNotifications
 
+enum PowerConnectionState: Equatable {
+    case acPower
+    case battery
+    case unknown
+}
+
 struct PowerSafetySnapshot: Equatable {
     let batteryPercent: Int?
-    let isOnACPower: Bool
+    let powerConnection: PowerConnectionState
     let thermalState: ProcessInfo.ThermalState
 }
 
 enum PowerSafetyIssue: Equatable, CustomStringConvertible {
     case lowBattery(percent: Int)
     case highTemperature
+    case powerSourceUnavailable
+    case batteryLevelUnavailable
 
     var description: String {
         switch self {
@@ -18,6 +26,10 @@ enum PowerSafetyIssue: Equatable, CustomStringConvertible {
             return SteamPackL10n.format("Battery is at %d%%", percent)
         case .highTemperature:
             return SteamPackL10n.text("Mac temperature is too high")
+        case .powerSourceUnavailable:
+            return SteamPackL10n.text("Power source could not be verified")
+        case .batteryLevelUnavailable:
+            return SteamPackL10n.text("Battery level could not be verified")
         }
     }
 }
@@ -35,12 +47,21 @@ enum PowerSafetyPolicy {
             return .highTemperature
         }
 
-        if !snapshot.isOnACPower,
-           let batteryPercent = snapshot.batteryPercent,
-           batteryPercent <= minimumBatteryPercent {
-            return .lowBattery(percent: batteryPercent)
+        switch snapshot.powerConnection {
+        case .acPower:
+            // Battery capacity is not required while macOS confirms AC power.
+            return nil
+        case .battery:
+            guard let batteryPercent = snapshot.batteryPercent else {
+                return .batteryLevelUnavailable
+            }
+            if batteryPercent <= minimumBatteryPercent {
+                return .lowBattery(percent: batteryPercent)
+            }
+            return nil
+        case .unknown:
+            return .powerSourceUnavailable
         }
-        return nil
     }
 }
 
@@ -95,7 +116,7 @@ final class PowerSafetyMonitor {
 
     static func readSnapshot() -> PowerSafetySnapshot {
         var batteryPercent: Int?
-        var isOnACPower = true
+        var powerConnection = PowerConnectionState.unknown
 
         if let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
            let sourceList = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] {
@@ -108,19 +129,29 @@ final class PowerSafetyMonitor {
 
                 let current = description[kIOPSCurrentCapacityKey as String] as? Int
                 let maximum = description[kIOPSMaxCapacityKey as String] as? Int
-                if let current, let maximum, maximum > 0 {
+                if let current,
+                   let maximum,
+                   maximum > 0,
+                   current >= 0,
+                   current <= maximum {
                     batteryPercent = Int((Double(current) / Double(maximum) * 100).rounded())
                 }
 
                 let state = description[kIOPSPowerSourceStateKey as String] as? String
-                isOnACPower = state == (kIOPSACPowerValue as String)
+                if state == (kIOPSACPowerValue as String) {
+                    powerConnection = .acPower
+                } else if state == (kIOPSBatteryPowerValue as String) {
+                    powerConnection = .battery
+                } else {
+                    powerConnection = .unknown
+                }
                 break
             }
         }
 
         return PowerSafetySnapshot(
             batteryPercent: batteryPercent,
-            isOnACPower: isOnACPower,
+            powerConnection: powerConnection,
             thermalState: ProcessInfo.processInfo.thermalState
         )
     }
@@ -150,6 +181,15 @@ enum PowerSafetyNotifier {
             title: SteamPackL10n.text("SteamPack watchdog stopped"),
             body: SteamPackL10n.text(
                 "Normal lid-close sleep was restored because crash recovery was no longer available."
+            )
+        )
+    }
+
+    static func notifyWatchdogRestoreFailure() {
+        notify(
+            title: SteamPackL10n.text("SteamPack could not restore normal sleep"),
+            body: SteamPackL10n.text(
+                "Closed-Lid sleep prevention may still be active. Reinstall the Closed-Lid permission, then open SteamPack to retry recovery."
             )
         )
     }

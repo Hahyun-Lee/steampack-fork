@@ -1,4 +1,1 @@
-# SteamPack Clamshell Mode (Battery) — pmset disablesleep 전용 NOPASSWD
-# 정확한 인자 2개만 허용 (와일드카드 금지 — 다른 pmset 조작 차단)
-# __USER__ 는 install-sudoers.sh가 설치 시점에 $(whoami)로 치환한다.
-__USER__ ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0
+#__UID__ ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0

@@ -13,7 +13,11 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Test release preflight logic
+        run: bash scripts/test-release-preflight.sh
+      - name: Test account-scoped sudoers installer
+        run: bash scripts/test-sudoers-installer.sh
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project

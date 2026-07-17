@@ -25,9 +25,9 @@ enum ClamshellWatchdog {
         store: ClamshellOwnershipStore,
         restore: () -> Bool
     ) -> Bool {
-        guard store.matches(token: token), restore() else { return false }
-        store.clearIfMatching(token: token)
-        return true
+        store.resolveIfMatching(token: token) { _ in
+            restore() ? .clear : .keep
+        }
     }
 
     @discardableResult

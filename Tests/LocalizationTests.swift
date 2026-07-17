@@ -45,17 +45,26 @@ final class LocalizationTests: XCTestCase {
 
     func testKoreanBundleFormatsDynamicSafetyCopy() throws {
         let bundle = try XCTUnwrap(Bundle(path: koreanLocalizationURL.path))
-        let translation = SteamPackL10n.text("Battery is at %d%%", bundle: bundle)
-        let formatted = String(format: translation, locale: Locale(identifier: "ko_KR"), 20)
+        let formatted = SteamPackL10n.format(
+            "Battery is at %d%%",
+            bundle: bundle,
+            20
+        )
 
         XCTAssertEqual(formatted, "배터리가 20% 남음")
     }
 
     func testEveryExplicitLocalizationKeyHasKoreanTranslation() throws {
         let catalog = try koreanCatalog()
-        let pattern = try NSRegularExpression(
-            pattern: #"SteamPackL10n\.(?:text|format)\(\s*\"([^\"]+)\""#
-        )
+        let patterns = try [
+            #"SteamPackL10n\.(?:text|format)\(\s*\"([^\"]+)\""#,
+            #"SteamPackL10n\.text\(\s*(?:\([^\n]*\)\s*)?[^?\n]*\?\s*\"([^\"]+)\"\s*:\s*\"([^\"]+)\""#,
+            #"LocalizedStringResource\s*=\s*\"([^\"]+)\""#,
+            #"@Parameter\(title:\s*\"([^\"]+)\""#,
+            #"ControlWidgetToggle\(\s*\"([^\"]+)\""#,
+            #"\.displayName\(\s*\"([^\"]+)\""#,
+            #"\.description\(\s*\"([^\"]+)\""#
+        ].map { try NSRegularExpression(pattern: $0) }
         let sourceDirectories = ["src", "Shared", "Control"]
         var keys = Set<String>()
 
@@ -72,9 +81,16 @@ final class LocalizationTests: XCTestCase {
             for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
                 let source = try String(contentsOf: fileURL, encoding: .utf8)
                 let range = NSRange(source.startIndex..., in: source)
-                for match in pattern.matches(in: source, range: range) {
-                    guard let keyRange = Range(match.range(at: 1), in: source) else { continue }
-                    keys.insert(String(source[keyRange]))
+                for pattern in patterns {
+                    for match in pattern.matches(in: source, range: range) {
+                        for captureIndex in 1..<match.numberOfRanges {
+                            guard let keyRange = Range(
+                                match.range(at: captureIndex),
+                                in: source
+                            ) else { continue }
+                            keys.insert(String(source[keyRange]))
+                        }
+                    }
                 }
             }
         }

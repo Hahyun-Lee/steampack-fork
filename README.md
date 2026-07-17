@@ -31,7 +31,7 @@ SteamPack is a macOS menu bar app with two controls: **Keep Awake** and **Closed
 
 **Closed Lid** also turns on **Keep Awake**. Turning **Keep Awake** off restores normal sleep behavior.
 
-Closed Lid turns itself off at 20% battery, under serious thermal pressure, or if SteamPack stops unexpectedly.
+Closed Lid is blocked or turns itself off when unplugged battery is at or below 20%, power telemetry is unavailable, macOS reports serious or critical thermal pressure, or the auto-off timer ends. If SteamPack stops unexpectedly, a watchdog attempts to restore normal sleep; failed restores are reported and retained for retry.
 
 > There is no DMG in this preview. Build from source using your own Apple Development team. Public binaries will be added after Developer ID signing and Apple notarization are available.
 
@@ -67,29 +67,31 @@ The Closed Lid permission allows only these two commands:
 
 SteamPack does not store or pass along your administrator password.
 
+The permission file is scoped to the current account's numeric user ID. **Install Closed-Lid Permission…** safely migrates the old shared rule only when it exactly belongs to the current account, and **Remove Closed-Lid Permission…** never removes another account's rule.
+
 ## Add the Control Center controls
 
 1. Open macOS **Control Center** and choose **Edit Controls**.
 2. Add **SteamPack Keep Awake** and **SteamPack Closed Lid**.
 3. Pin either control to the menu bar if you want quicker access.
 
-The SteamPack app must be running. When it is not, the controls show OFF and offer to open the app.
+The SteamPack app must be running. When it is not, the controls show OFF; trying to use one displays an instruction to open SteamPack.
 
 ## Closed-lid safety
 
 Keep a running MacBook on a hard, ventilated surface. Do not put it in a bag while Closed Lid is on.
 
-SteamPack turns Closed Lid off when:
+SteamPack blocks or turns Closed Lid off when:
 
-- battery reaches 20% while unplugged;
+- battery is at or below 20% while unplugged;
+- macOS cannot verify the power source, or cannot read battery level while unplugged;
 - macOS reports serious or critical thermal pressure;
 - the auto-off timer expires;
-- you choose **Quit & Restore Sleep**;
-- the app crashes or is force-killed.
+- you choose **Quit & Restore Sleep**.
 
-A separate watchdog restores normal lid-close sleep if the app stops unexpectedly. Each session has its own token, so an old watchdog cannot stop a newer session. SteamPack also refuses to take over a `SleepDisabled` state created by another tool.
+A separate watchdog attempts to restore normal lid-close sleep if the app stops unexpectedly. If restoration fails, SteamPack reports that sleep prevention may still be active and retains the ownership record for an authorized retry. Each session has its own token, so an old watchdog cannot stop a newer session. SteamPack also refuses to take over a `SleepDisabled` state created by another tool.
 
-Control Center reports the state that macOS actually applied. If the app heartbeat disappears, the controls return to OFF.
+The Control Center providers read the state that macOS actually applied. A missing or expired applied-state record is evaluated as OFF, and build 7 requests both per-control and full Control Center reloads. Because macOS can retain a visible tile cache, actual tile convergence must pass the [installed-app checklist](LIVE_E2E_CHECKLIST.md) before binary release.
 
 ## Uninstall
 
@@ -124,6 +126,8 @@ xcodebuild \
 ```
 
 After building and installing the Closed Lid permission, run `scripts/verify-crash-recovery.sh` to test watchdog recovery. The script refuses to run if sleep is already disabled.
+
+Before distributing a signed build, complete the [installed-app Control Center checklist](LIVE_E2E_CHECKLIST.md). It verifies the installed app and embedded extension versions and the visible tile transitions that unit tests cannot observe.
 
 `scripts/release.sh` will not create a public binary unless signature verification, notarization, stapling, and Gatekeeper assessment all pass.
 

@@ -2,10 +2,11 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="$PROJECT_ROOT/build"
-DIST_DIR="$PROJECT_ROOT/dist"
-APP_BUNDLE="$BUILD_DIR/SteamPack.app"
-DMG_NAME="SteamPack"
+BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
+DIST_DIR="${DIST_DIR:-$PROJECT_ROOT/dist}"
+APP_BUNDLE="${APP_BUNDLE:-$BUILD_DIR/SteamPack.app}"
+DMG_NAME="${DMG_NAME:-SteamPack}"
+VOLUME_NAME="${VOLUME_NAME:-SteamPack}"
 
 [ -d "$APP_BUNDLE" ] || { echo "Error: Build first (scripts/build.sh)"; exit 1; }
 
@@ -21,7 +22,7 @@ ln -s /Applications "$STAGING/Applications"
 
 # Create DMG
 hdiutil create \
-    -volname "$DMG_NAME" \
+    -volname "$VOLUME_NAME" \
     -srcfolder "$STAGING" \
     -ov \
     -format UDZO \

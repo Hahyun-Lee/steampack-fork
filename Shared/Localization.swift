@@ -5,9 +5,13 @@ enum SteamPackL10n {
         bundle.localizedString(forKey: key, value: key, table: nil)
     }
 
-    static func format(_ key: String, _ arguments: CVarArg...) -> String {
+    static func format(
+        _ key: String,
+        bundle: Bundle = .main,
+        _ arguments: CVarArg...
+    ) -> String {
         String(
-            format: text(key),
+            format: text(key, bundle: bundle),
             locale: Locale.current,
             arguments: arguments
         )
