@@ -29,7 +29,7 @@ SteamPack is a macOS menu bar app with two controls: **Keep Awake** and **Closed
 | **Keep Awake** | Prevents idle, display, and disk sleep while the lid is open | None |
 | **Closed Lid** | Keeps the Mac running after the lid closes, including on battery | One administrator approval |
 
-**Closed Lid** also turns on **Keep Awake**. Turning **Keep Awake** off restores normal sleep behavior.
+**Closed Lid** also turns on **Keep Awake**. Turning Closed Lid off returns to Keep Awake; turning Keep Awake off restores normal sleep behavior. The menu and Control Center use the same transitions.
 
 Closed Lid is blocked or turns itself off when unplugged battery is at or below 20%, power telemetry is unavailable, macOS reports serious or critical thermal pressure, or the auto-off timer ends. If SteamPack stops unexpectedly, a watchdog attempts to restore normal sleep; failed restores are reported and retained for retry.
 
@@ -75,7 +75,7 @@ The permission file is scoped to the current account's numeric user ID. **Instal
 2. Add **SteamPack Keep Awake** and **SteamPack Closed Lid**.
 3. Pin either control to the menu bar if you want quicker access.
 
-The SteamPack app must be running. When it is not, the controls show OFF; trying to use one displays an instruction to open SteamPack.
+The SteamPack app must be running. When its live applied state is unavailable, the controls report that they are unavailable instead of presenting an unverified OFF value; trying to use one displays an instruction to open SteamPack.
 
 ## Closed-lid safety
 
@@ -91,7 +91,7 @@ SteamPack blocks or turns Closed Lid off when:
 
 A separate watchdog attempts to restore normal lid-close sleep if the app stops unexpectedly. If restoration fails, SteamPack reports that sleep prevention may still be active and retains the ownership record for an authorized retry. Each session has its own token, so an old watchdog cannot stop a newer session. SteamPack also refuses to take over a `SleepDisabled` state created by another tool.
 
-The Control Center providers read the state that macOS actually applied. A missing or expired applied-state record is evaluated as OFF, and build 7 requests both per-control and full Control Center reloads. Because macOS can retain a visible tile cache, actual tile convergence must pass the [installed-app checklist](LIVE_E2E_CHECKLIST.md) before binary release.
+The Control Center providers read the state that macOS actually applied. Each request carries a revision, and the control waits for the app to publish the complete verified result before reporting success. SteamPack relies on macOS to refresh the Control Center source you tapped; when a linked control also changed, SteamPack refreshes it immediately and retries that targeted refresh once after half a second. A change made from SteamPack's status menu follows the same immediate-plus-one-retry policy for affected controls, covering the case where Control Center opens just after the change. There is no periodic or whole-Control-Center reload loop. A missing or expired applied-state record is unavailable, not an unverified OFF. Visible convergence and response time must pass the [installed-app checklist](LIVE_E2E_CHECKLIST.md) in normal Control Center—not **Edit Controls**—before binary release.
 
 ## Uninstall
 
@@ -127,7 +127,9 @@ xcodebuild \
 
 After building and installing the Closed Lid permission, run `scripts/verify-crash-recovery.sh` to test watchdog recovery. The script refuses to run if sleep is already disabled.
 
-Before distributing a signed build, complete the [installed-app Control Center checklist](LIVE_E2E_CHECKLIST.md). It verifies the installed app and embedded extension versions and the visible tile transitions that unit tests cannot observe.
+For local Control Center testing without an Apple Development identity, `scripts/build-local-adhoc.sh` creates a correctly sealed, local-only app at `build/adhoc/SteamPack.app`. It is not a distributable build. Never install a `CODE_SIGNING_ALLOWED=NO` test product to evaluate the Control Center extension.
+
+Before distributing a signed build, complete the [installed-app Control Center checklist](LIVE_E2E_CHECKLIST.md). It verifies the installed app and embedded extension versions, signatures, sandbox entitlement, PlugInKit registration, and visible tile transitions that unit tests cannot observe.
 
 `scripts/release.sh` will not create a public binary unless signature verification, notarization, stapling, and Gatekeeper assessment all pass.
 

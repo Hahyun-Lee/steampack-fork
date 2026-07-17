@@ -10,6 +10,9 @@
 "SteamPack Closed Lid" = "SteamPack 덮개 닫고 계속";
 "Keep working after you close the lid, even on battery." = "배터리에서도 덮개를 닫은 채 작업을 계속합니다.";
 "Open SteamPack before using this control." = "이 컨트롤을 사용하려면 SteamPack을 먼저 실행하세요.";
+"SteamPack could not apply this control. Check the app menu." = "SteamPack이 이 컨트롤을 적용하지 못했습니다. 앱 메뉴를 확인하세요.";
+"SteamPack did not confirm this control in time. Try again." = "SteamPack이 제시간에 이 컨트롤을 확인하지 못했습니다. 다시 시도하세요.";
+"SteamPack state is temporarily unavailable. Open the app and try again." = "SteamPack 상태를 잠시 확인할 수 없습니다. 앱을 열고 다시 시도하세요.";
 
 /* Menu and status */
 "Watchdog stopped — normal sleep restored" = "강제 종료 보호 중단 — 정상 잠자기로 복구됨";

@@ -21,7 +21,7 @@ if [ -z "$RELEASE_TAG" ]; then
     exit 2
 fi
 
-for command_name in git xcodegen xcodebuild codesign security xcrun hdiutil spctl lipo shasum; do
+for command_name in git xcodegen xcodebuild codesign security xcrun hdiutil spctl lipo shasum cmp; do
     command -v "$command_name" >/dev/null || {
         echo "Required release command is missing: $command_name" >&2
         exit 2
@@ -116,6 +116,11 @@ BUILT_APP_VERSION=$(plist_value "$APP/Contents/Info.plist" CFBundleShortVersionS
 BUILT_APP_BUILD=$(plist_value "$APP/Contents/Info.plist" CFBundleVersion)
 BUILT_EXTENSION_VERSION=$(plist_value "$CONTROL_EXTENSION/Contents/Info.plist" CFBundleShortVersionString)
 BUILT_EXTENSION_BUILD=$(plist_value "$CONTROL_EXTENSION/Contents/Info.plist" CFBundleVersion)
+BUILT_APP_ID=$(plist_value "$APP/Contents/Info.plist" CFBundleIdentifier)
+BUILT_EXTENSION_ID=$(plist_value "$CONTROL_EXTENSION/Contents/Info.plist" CFBundleIdentifier)
+BUILT_EXTENSION_POINT=$(plist_value \
+    "$CONTROL_EXTENSION/Contents/Info.plist" \
+    "NSExtension:NSExtensionPointIdentifier")
 validate_bundle_versions "$BUILT_APP_VERSION" "$BUILT_APP_BUILD" "$APP_VERSION" "$APP_BUILD" "app"
 validate_bundle_versions \
     "$BUILT_EXTENSION_VERSION" \
@@ -123,6 +128,15 @@ validate_bundle_versions \
     "$APP_VERSION" \
     "$APP_BUILD" \
     "Control extension"
+validate_bundle_identifier "$BUILT_APP_ID" "com.steampack.app" "app"
+validate_bundle_identifier \
+    "$BUILT_EXTENSION_ID" \
+    "com.steampack.app.control" \
+    "Control extension"
+validate_bundle_identifier \
+    "$BUILT_EXTENSION_POINT" \
+    "com.apple.widgetkit-extension" \
+    "Control extension point"
 validate_universal_arches "$(lipo -archs "$APP/Contents/MacOS/SteamPack")"
 validate_universal_arches "$(lipo -archs "$CONTROL_EXTENSION/Contents/MacOS/SteamPackControl")"
 /usr/bin/plutil -lint "$PROJECT_ROOT/SteamPack.entitlements" >/dev/null
@@ -148,12 +162,14 @@ verify_signed_bundle \
     "$CONTROL_EXTENSION" \
     "$PROJECT_ROOT/SteamPackControl.entitlements" \
     "$WORK_DIR" \
-    "control-extension"
+    "control-extension" \
+    "com.steampack.app.control"
 verify_signed_bundle \
     "$APP" \
     "$PROJECT_ROOT/SteamPack.entitlements" \
     "$WORK_DIR" \
-    "app"
+    "app" \
+    "com.steampack.app"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 APP_TEAM=$(signed_team_identifier "$APP")
@@ -202,6 +218,31 @@ MOUNTED=1
 }
 /usr/bin/ditto "$MOUNT_DIR/SteamPack.app" "$EXTRACTED_APP"
 codesign --verify --deep --strict --verbose=2 "$EXTRACTED_APP"
+EXTRACTED_EXTENSION="$EXTRACTED_APP/Contents/PlugIns/SteamPackControl.appex"
+verify_signed_bundle \
+    "$EXTRACTED_EXTENSION" \
+    "$PROJECT_ROOT/SteamPackControl.entitlements" \
+    "$WORK_DIR" \
+    "extracted-control-extension" \
+    "com.steampack.app.control"
+verify_signed_bundle \
+    "$EXTRACTED_APP" \
+    "$PROJECT_ROOT/SteamPack.entitlements" \
+    "$WORK_DIR" \
+    "extracted-app" \
+    "com.steampack.app"
+cmp -s \
+    "$APP/Contents/MacOS/SteamPack" \
+    "$EXTRACTED_APP/Contents/MacOS/SteamPack" || {
+    echo "Mounted-DMG app executable differs from the staged signed app." >&2
+    exit 1
+}
+cmp -s \
+    "$CONTROL_EXTENSION/Contents/MacOS/SteamPackControl" \
+    "$EXTRACTED_EXTENSION/Contents/MacOS/SteamPackControl" || {
+    echo "Mounted-DMG Control extension differs from the staged signed extension." >&2
+    exit 1
+}
 assess_release_app "$EXTRACTED_APP"
 APP_GATEKEEPER=1
 

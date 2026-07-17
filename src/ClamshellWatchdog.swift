@@ -38,9 +38,10 @@ enum ClamshellWatchdog {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
+            return try SteamPackProcessTimeout.run(
+                process,
+                timeout: SteamPackProcessTimeout.privilegedMutation
+            ) == 0
         } catch {
             return false
         }

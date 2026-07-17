@@ -17,7 +17,11 @@ fi
 
 /usr/bin/sed "s/__UID__/$USER_ID/g" "$TEMPLATE" > "$TMP"
 /usr/sbin/visudo -cf "$TMP"
-EXPECTED_RULE="#$USER_ID ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0"
+# The command_timeout Defaults line makes sudo itself terminate a stuck
+# `pmset` after 5s, so a privileged child cannot outlive the app's own bounded
+# runner. Keep this two-line form byte-identical to the rendered template.
+EXPECTED_RULE="Defaults!/usr/bin/pmset command_timeout=5
+#$USER_ID ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0"
 
 # Copy first to an ignored, root-owned file; then compare against the inline
 # expected bytes, validate that root-owned copy, and atomically move it into

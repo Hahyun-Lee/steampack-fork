@@ -56,14 +56,53 @@ expect_success \
 expect_failure \
     "non-Developer-ID identity is rejected" \
     validate_developer_id_identity '  1) 0123 "Apple Development: Release Test"' "Release Test"
-expect_success "source version and build agree" validate_source_versions 1.4.0 7 1.4.0 7
-expect_failure "source version mismatch is rejected" validate_source_versions 1.4.0 7 1.4.1 7
+expect_success "source version and build agree" validate_source_versions 1.4.0 9 1.4.0 9
+expect_failure "source version mismatch is rejected" validate_source_versions 1.4.0 9 1.4.1 9
 expect_success \
     "embedded extension version and build match the app" \
-    validate_bundle_versions 1.4.0 7 1.4.0 7 "Control extension"
+    validate_bundle_versions 1.4.0 9 1.4.0 9 "Control extension"
 expect_failure \
     "stale embedded extension build is rejected" \
-    validate_bundle_versions 1.4.0 6 1.4.0 7 "Control extension"
+    validate_bundle_versions 1.4.0 8 1.4.0 9 "Control extension"
+expect_success \
+    "app bundle identifier is exact" \
+    validate_bundle_identifier com.steampack.app com.steampack.app "app"
+expect_failure \
+    "bare linker identifier is rejected" \
+    validate_bundle_identifier SteamPack com.steampack.app "app"
+expect_success \
+    "app and extension use one signing team" \
+    validate_signing_teams TEAM123456 TEAM123456 0
+expect_failure \
+    "different signing teams are rejected" \
+    validate_signing_teams TEAM123456 TEAM654321 0
+expect_failure \
+    "missing signing teams are rejected by default" \
+    validate_signing_teams "" "" 0
+expect_success \
+    "explicit local test mode accepts proper ad-hoc signing" \
+    validate_signing_teams "" "" 1
+expect_success \
+    "Control extension sandbox entitlement is required" \
+    validate_sandbox_entitlement '{ "com.apple.security.app-sandbox" => true }'
+expect_failure \
+    "missing Control extension sandbox entitlement is rejected" \
+    validate_sandbox_entitlement '{}'
+expect_success \
+    "one installed Control extension path is accepted" \
+    validate_registered_extension_path \
+    /Applications/SteamPack.app/Contents/PlugIns/SteamPackControl.appex \
+    /Applications/SteamPack.app/Contents/PlugIns/SteamPackControl.appex
+expect_failure \
+    "a stale temporary Control extension path is rejected" \
+    validate_registered_extension_path \
+    /private/tmp/SteamPackControl.appex \
+    /Applications/SteamPack.app/Contents/PlugIns/SteamPackControl.appex
+expect_failure \
+    "multiple registered Control extensions are rejected" \
+    validate_registered_extension_path \
+    $'/private/tmp/SteamPackControl.appex\n/Applications/SteamPack.app/Contents/PlugIns/SteamPackControl.appex' \
+    /Applications/SteamPack.app/Contents/PlugIns/SteamPackControl.appex
 
 expect_success "clean status is accepted" validate_clean_status ""
 expect_failure "dirty status is rejected" validate_clean_status " M README.md"

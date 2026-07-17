@@ -22,17 +22,19 @@ final class ClamshellMode {
     var onWatchdogFailure: ((Bool) -> Void)?
 
     private let ownershipStore: ClamshellOwnershipStore
+    private(set) var isAuthorized: Bool
     private var activeSessionToken: String?
     private var watchdogProcess: Process?
     private var watchdogLease: ClamshellWatchdogLease?
 
     init(ownershipStore: ClamshellOwnershipStore = .defaultStore()) {
         self.ownershipStore = ownershipStore
+        self.isAuthorized = ClamshellAuthorization.isInstalled()
         refresh()
     }
 
-    var isAuthorized: Bool {
-        ClamshellAuthorization.isInstalled()
+    func refreshAuthorization() {
+        isAuthorized = ClamshellAuthorization.isInstalled()
     }
 
     func refresh() {
@@ -68,12 +70,13 @@ final class ClamshellMode {
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         do {
-            try process.run()
-            process.waitUntilExit()
+            guard try SteamPackProcessTimeout.run(
+                process,
+                timeout: SteamPackProcessTimeout.statusQuery
+            ) == 0 else { return nil }
         } catch {
             return nil
         }
-        guard process.terminationStatus == 0 else { return nil }
         let output = String(
             data: pipe.fileHandleForReading.readDataToEndOfFile(),
             encoding: .utf8
@@ -104,16 +107,32 @@ final class ClamshellMode {
     }
 
     private func enable() -> ToggleResult {
-        // Re-observe immediately before acquiring a lease. A menu refresh is only
-        // a snapshot; another process may change SleepDisabled before this click.
-        refresh()
-        guard !isOn else { return .success }
-        if let failure = Self.enablePreflightFailure(
-            systemStatusUnknown: isSystemStatusUnknown,
-            externallyDisabled: isExternallyDisabled,
-            authorized: isAuthorized
-        ) {
-            return .failed(failure)
+        if isOn {
+            // A repeated ON request still verifies that this session's global
+            // setting exists; never acknowledge a stale in-memory flag.
+            switch currentSystemStatus() {
+            case .some(true):
+                return .success
+            case .some(false):
+                if let token = activeSessionToken {
+                    ownershipStore.clearIfMatching(token: token)
+                    stopWatchdog(token: token)
+                }
+                activeSessionToken = nil
+                isOn = false
+                isExternallyDisabled = false
+                isSystemStatusUnknown = false
+            case .none:
+                isSystemStatusUnknown = true
+                return .failed(SteamPackL10n.text(
+                    "Could not verify the macOS sleep setting. Closed Lid was not enabled."
+                ))
+            }
+        }
+        guard isAuthorized else {
+            return .failed(SteamPackL10n.text(
+                "Closed-Lid permission is not installed."
+            ))
         }
 
         // Every enable cycle gets a new token. The previous watchdog may still be
@@ -144,6 +163,8 @@ final class ClamshellMode {
             ))
         }
         if let failure = Self.claimFailureMessage(claimResult) {
+            isSystemStatusUnknown = claimResult == .systemStatusUnknown
+            isExternallyDisabled = claimResult == .externallyDisabled
             return .failed(failure)
         }
         activeSessionToken = record.token
@@ -161,8 +182,26 @@ final class ClamshellMode {
             return .failed(SteamPackL10n.text("macOS rejected the sleep setting."))
         }
 
+        // Postcondition: a zero exit from `sudo pmset` is not proof the global
+        // setting actually flipped. A late-terminated pmset child, a racing
+        // external `pmset disablesleep 0`, or a hung privileged call can leave
+        // SleepDisabled off while the command still reported success. Reverify
+        // against the live system before publishing success; fail closed and
+        // unwind the lease if it did not take.
+        let applied = currentSystemStatus()
+        guard applied == true else {
+            ownershipStore.clearIfMatching(token: record.token)
+            stopWatchdog(token: record.token)
+            activeSessionToken = nil
+            isSystemStatusUnknown = (applied == nil)
+            return .failed(SteamPackL10n.text(
+                "Could not verify the macOS sleep setting. Closed Lid was not enabled."
+            ))
+        }
+
         isOn = true
         isExternallyDisabled = false
+        isSystemStatusUnknown = false
         return .success
     }
 

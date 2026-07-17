@@ -96,6 +96,62 @@ validate_bundle_versions() {
     }
 }
 
+validate_bundle_identifier() {
+    local actual="${1:-}"
+    local expected="${2:-}"
+    local label="${3:-bundle}"
+
+    [ "$actual" = "$expected" ] || {
+        release_error "$label identifier '$actual' differs from '$expected'"
+        return 1
+    }
+}
+
+validate_signing_teams() {
+    local app_team="${1:-}"
+    local extension_team="${2:-}"
+    local allow_adhoc="${3:-0}"
+
+    if [ -n "$app_team" ] || [ -n "$extension_team" ]; then
+        [ -n "$app_team" ] && [ "$app_team" = "$extension_team" ] || {
+            release_error "app and Control extension must have the same nonempty TeamIdentifier"
+            return 1
+        }
+        return 0
+    fi
+
+    [ "$allow_adhoc" = "1" ] || {
+        release_error "app and Control extension do not have a TeamIdentifier"
+        return 1
+    }
+}
+
+validate_sandbox_entitlement() {
+    local entitlements="${1:-}"
+
+    printf '%s\n' "$entitlements" \
+        | grep -q '"com.apple.security.app-sandbox" => true' || {
+        release_error "Control extension is missing the app-sandbox entitlement"
+        return 1
+    }
+}
+
+validate_registered_extension_path() {
+    local registered_paths="${1:-}"
+    local expected_path="${2:-}"
+    local count
+
+    count=$(printf '%s\n' "$registered_paths" | awk 'NF { count += 1 } END { print count + 0 }')
+    [ "$count" -eq 1 ] || {
+        release_error "expected one registered Control extension, found $count"
+        return 1
+    }
+    [ "$registered_paths" = "$expected_path" ] || {
+        release_error "registered Control extension '$registered_paths' differs from '$expected_path'"
+        return 1
+    }
+}
+
 validate_universal_arches() {
     local arches="${1:-}"
     local arch
@@ -326,12 +382,19 @@ verify_signed_bundle() {
     local expected_entitlements="$2"
     local work_dir="$3"
     local label="$4"
+    local expected_identifier="${5:-}"
     local metadata_file="$work_dir/${label}.codesign.txt"
     local actual_entitlements="$work_dir/${label}.entitlements.plist"
     local entitlement_errors="$work_dir/${label}.entitlements.stderr"
 
     codesign --verify --strict --verbose=2 "$bundle"
     codesign -dv --verbose=4 "$bundle" > /dev/null 2> "$metadata_file"
+    if [ -n "$expected_identifier" ]; then
+        grep -Fxq "Identifier=$expected_identifier" "$metadata_file" || {
+            release_error "$label signed identifier differs from $expected_identifier"
+            return 1
+        }
+    fi
     grep -q '^Authority=Developer ID Application:' "$metadata_file" || {
         release_error "$label is not signed by Developer ID Application"
         return 1
@@ -362,5 +425,26 @@ verify_signed_bundle() {
 
 signed_team_identifier() {
     local bundle="$1"
-    codesign -dv --verbose=4 "$bundle" 2>&1 | awk -F= '/^TeamIdentifier=/{print $2; exit}'
+    local codesign_bin="${CODESIGN_BIN:-codesign}"
+    "$codesign_bin" -dv --verbose=4 "$bundle" 2>&1 | awk -F= '
+        /^TeamIdentifier=/ {
+            if ($2 != "not set") print $2
+            exit
+        }
+    '
+}
+
+signed_bundle_identifier() {
+    local bundle="$1"
+    local codesign_bin="${CODESIGN_BIN:-codesign}"
+    "$codesign_bin" -dv --verbose=4 "$bundle" 2>&1 \
+        | awk -F= '/^Identifier=/{print $2; exit}'
+}
+
+signed_cdhash_for_arch() {
+    local bundle="$1"
+    local arch="$2"
+    local codesign_bin="${CODESIGN_BIN:-codesign}"
+    "$codesign_bin" -d --arch "$arch" --verbose=4 "$bundle" 2>&1 \
+        | awk -F= '/^CDHash=/{print $2; exit}'
 }

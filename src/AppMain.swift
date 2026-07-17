@@ -5,6 +5,7 @@ import WidgetKit
 enum SteamPackRuntimeRefreshPolicy {
     static let heartbeatInterval: TimeInterval = 2
     static let fullStateInterval: TimeInterval = 10
+    static let controlReloadRetryDelay: TimeInterval = 0.5
 
     static func shouldPersistRuntimeChange(
         from previous: SteamPackControlPolicy.DesiredMode,
@@ -17,6 +18,97 @@ enum SteamPackRuntimeRefreshPolicy {
         after mode: SteamPackControlPolicy.DesiredMode
     ) -> Bool {
         mode == .normalSleep
+    }
+}
+
+struct SteamPackControlSurfaceState: Equatable {
+    let keepAwake: Bool
+    let clamshell: Bool
+
+    init(keepAwake: Bool, clamshell: Bool) {
+        self.keepAwake = keepAwake || clamshell
+        self.clamshell = clamshell
+    }
+
+    func changedControls(
+        comparedTo previous: SteamPackControlSurfaceState?
+    ) -> SteamPackControlReloadDecision {
+        guard let previous else { return .both }
+        return SteamPackControlReloadDecision(
+            keepAwake: keepAwake != previous.keepAwake,
+            clamshell: clamshell != previous.clamshell
+        )
+    }
+}
+
+struct SteamPackControlReloadDecision: Equatable {
+    let keepAwake: Bool
+    let clamshell: Bool
+
+    static let none = SteamPackControlReloadDecision(
+        keepAwake: false,
+        clamshell: false
+    )
+    static let both = SteamPackControlReloadDecision(
+        keepAwake: true,
+        clamshell: true
+    )
+
+    static func decide(
+        publicationSucceeded: Bool,
+        publicationWasInvalid: Bool,
+        reloadStateChanges: Bool,
+        previous: SteamPackControlSurfaceState?,
+        current: SteamPackControlSurfaceState
+    ) -> SteamPackControlReloadDecision {
+        if !publicationSucceeded {
+            return publicationWasInvalid ? .none : .both
+        }
+        if publicationWasInvalid {
+            return .both
+        }
+        guard reloadStateChanges else { return .none }
+        return current.changedControls(comparedTo: previous)
+    }
+
+    func suppressingAutomaticReload(
+        for channel: SteamPackControlChannel?
+    ) -> SteamPackControlReloadDecision {
+        switch channel {
+        case .keepAwake:
+            return SteamPackControlReloadDecision(
+                keepAwake: false,
+                clamshell: clamshell
+            )
+        case .clamshell:
+            return SteamPackControlReloadDecision(
+                keepAwake: keepAwake,
+                clamshell: false
+            )
+        case nil:
+            return self
+        }
+    }
+}
+
+enum SteamPackKeepAwakeTransitionStep: Equatable {
+    case startKeepAwake
+    case disableClosedLid
+}
+
+enum SteamPackKeepAwakeTransitionPlan {
+    static func steps(
+        keepAwakeIsOn: Bool,
+        closedLidIsOn: Bool
+    ) -> [SteamPackKeepAwakeTransitionStep] {
+        var result: [SteamPackKeepAwakeTransitionStep] = []
+        if !keepAwakeIsOn {
+            result.append(.startKeepAwake)
+        }
+        if closedLidIsOn {
+            result.append(.disableClosedLid)
+        }
+        return result
     }
 }
 
@@ -43,8 +135,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var localIntentBarrier = SteamPackLocalIntentBarrier()
     private var lastAcceptedControlRevision: UInt64 = 0
     private var localIntentRetryWorkItem: DispatchWorkItem?
+    private var controlReloadRetryWorkItem: DispatchWorkItem?
+    private var appliedStateExpiryReloadWorkItem: DispatchWorkItem?
     private var localIntentPersistenceFailed = false
     private var appliedStatePersistenceFailed = false
+    private var lastPublishedControlState: SteamPackControlSurfaceState?
+    private var lastControlAcknowledgement: SteamPackControlAcknowledgement?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -101,16 +197,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // means even an older notification delivered late reconciles the newest
         // complete request, never a mix of two requests.
         let request = SteamPackShared.readControlRequest()
-        defer { finishControlReconciliation(requestedRevision: request.revision) }
+        // A Darwin notification is only a wake hint and may be duplicated. The
+        // revision gate guarantees that an already-handled request cannot run
+        // the actuator or its verification path twice.
+        guard request.revision > lastAcceptedControlRevision else { return }
+        if request.isExpired() {
+            // A control intent may already have returned an error. A request that
+            // reaches the app after its deadline is acknowledged as rejected but
+            // must never actuate later in the background.
+            lastAcceptedControlRevision = request.revision
+            lastControlAcknowledgement = SteamPackControlAcknowledgement.evaluate(
+                request: request,
+                acceptedIncomingRequest: false,
+                appliedKeepAwake: sleepToggle.isDisableSleep,
+                appliedClamshell: clamshellMode.isOn
+            )
+            if localIntentBarrier.extendPendingIntent(
+                throughRevision: request.revision
+            ) {
+                // Preserve a newer local safety/menu decision above the expired
+                // record so a restart cannot rediscover it as the current intent.
+                scheduleLocalIntentPersistenceRetry()
+            }
+            publishState(automaticReloadChannel: nil)
+            requestControlCenterReload(.both)
+            updateMenu(
+                refreshRuntimeState: false,
+                publishControlState: false
+            )
+            return
+        }
         let resolution = localIntentBarrier.resolve(request)
+        lastAcceptedControlRevision = max(lastAcceptedControlRevision, request.revision)
         if resolution.acceptedIncomingRequest {
-            lastAcceptedControlRevision = max(lastAcceptedControlRevision, request.revision)
             localIntentRetryWorkItem?.cancel()
             localIntentRetryWorkItem = nil
             localIntentPersistenceFailed = false
+        } else {
+            // The pending local intent is authoritative. Mark this revision as
+            // terminally rejected, then persist the local mode above it.
+            lastControlAcknowledgement = SteamPackControlAcknowledgement.evaluate(
+                request: request,
+                acceptedIncomingRequest: false,
+                appliedKeepAwake: sleepToggle.isDisableSleep,
+                appliedClamshell: clamshellMode.isOn
+            )
+            _ = localIntentBarrier.extendPendingIntent(
+                throughRevision: request.revision
+            )
+            scheduleLocalIntentPersistenceRetry()
         }
-        let desiredMode = resolution.mode
+        applyControlMode(resolution.mode)
+        finishControlReconciliation(
+            requestedRequest: request,
+            acceptedIncomingRequest: resolution.acceptedIncomingRequest
+        )
+    }
 
+    private func applyControlMode(_ desiredMode: SteamPackControlPolicy.DesiredMode) {
         switch desiredMode {
         case .normalSleep:
             let report = stopAllKeepAwakeModes()
@@ -118,17 +262,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             report.failures.forEach(PowerSafetyNotifier.notifyControlFailure)
 
         case .keepAwake:
-            if clamshellMode.isOn {
-                let result = clamshellMode.set(false)
-                if case .failed(let message) = result {
-                    PowerSafetyNotifier.notifyControlFailure(message)
-                    return
-                }
-            }
-            if !sleepToggle.isDisableSleep,
-               case .failed(let message) = sleepToggle.toggle() {
+            if let failure = transitionToKeepAwake() {
                 cancelAutoOffIfRuntimeIsNormal()
-                PowerSafetyNotifier.notifyControlFailure(message)
+                PowerSafetyNotifier.notifyControlFailure(failure)
             }
 
         case .closedLid:
@@ -141,9 +277,111 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func finishControlReconciliation(requestedRevision: UInt64) {
-        updateMenu()
-        guard SteamPackShared.readControlRequest().revision > requestedRevision else { return }
+    @discardableResult
+    private func transitionToKeepAwake() -> String? {
+        let steps = SteamPackKeepAwakeTransitionPlan.steps(
+            keepAwakeIsOn: sleepToggle.isDisableSleep,
+            closedLidIsOn: clamshellMode.isOn
+        )
+        var startedKeepAwake = false
+
+        for step in steps {
+            switch step {
+            case .startKeepAwake:
+                switch sleepToggle.toggle() {
+                case .success:
+                    startedKeepAwake = true
+                case .failed(let message):
+                    return message
+                }
+
+            case .disableClosedLid:
+                let result = clamshellMode.set(false)
+                if case .failed(let message) = result {
+                    // Preserve the mode that existed before this transition. A
+                    // newly started caffeinate process is compensation-only and
+                    // must not remain after pmset failed to turn off.
+                    if startedKeepAwake, sleepToggle.isDisableSleep {
+                        _ = sleepToggle.toggle()
+                    }
+                    return message
+                }
+            }
+        }
+        return nil
+    }
+
+    private func finishControlReconciliation(
+        requestedRequest: SteamPackControlRequest,
+        acceptedIncomingRequest: Bool
+    ) {
+        let newestRequest = SteamPackShared.readControlRequest()
+        if newestRequest.revision > requestedRequest.revision {
+            // Do not publish an intermediate acknowledgement after a rapid tap
+            // or timeout rollback. Apply the newest complete record first.
+            reconcileControlRequests()
+            return
+        }
+
+        // Use one verification instant for both deadline evaluation and the
+        // durable acknowledgement timestamp. The mode may be fully applied just
+        // before the deadline even if the atomic file replacement finishes a few
+        // milliseconds later.
+        let verificationTime = Date()
+        let expiredDuringActuation = acceptedIncomingRequest
+            && requestedRequest.isExpired(now: verificationTime)
+        if expiredDuringActuation {
+            // A slow pmset/watchdog path crossed the intent deadline. Restore the
+            // captured pre-request mode before publishing a terminal rejection.
+            applyControlMode(requestedRequest.rollbackMode)
+        }
+        let publicationTime = expiredDuringActuation ? Date() : verificationTime
+        lastControlAcknowledgement = SteamPackControlAcknowledgement.evaluate(
+            request: requestedRequest,
+            acceptedIncomingRequest: acceptedIncomingRequest
+                && !expiredDuringActuation,
+            appliedKeepAwake: sleepToggle.isDisableSleep,
+            appliedClamshell: clamshellMode.isOn,
+            now: verificationTime
+        )
+        var requestSucceeded = lastControlAcknowledgement?.succeeded == true
+        // Persist the verified actuator result and request revision before the
+        // intent returns and Control Center performs its automatic value query.
+        // Menu rendering and safety copy are not on the acknowledgement path.
+        let acknowledgementPublished = publishState(
+            automaticReloadChannel: requestSucceeded
+                ? requestedRequest.source
+                : nil,
+            now: publicationTime
+        )
+        if requestSucceeded, !acknowledgementPublished {
+            // Never leave an applied mode paired with an intent that cannot see
+            // its durable success. Restore the captured mode immediately and make
+            // the terminal outcome a rejection for every later heartbeat.
+            applyControlMode(requestedRequest.rollbackMode)
+            let rollbackTime = Date()
+            lastControlAcknowledgement = SteamPackControlAcknowledgement.evaluate(
+                request: requestedRequest,
+                acceptedIncomingRequest: false,
+                appliedKeepAwake: sleepToggle.isDisableSleep,
+                appliedClamshell: clamshellMode.isOn,
+                now: rollbackTime
+            )
+            requestSucceeded = false
+            _ = publishState(
+                automaticReloadChannel: nil,
+                now: rollbackTime
+            )
+        }
+        if !requestSucceeded {
+            requestControlCenterReload(.both)
+        }
+        updateMenu(
+            refreshRuntimeState: false,
+            publishControlState: false
+        )
+        guard SteamPackShared.readControlRequest().revision
+                > requestedRequest.revision else { return }
         // A newer request arrived while the older one was being applied. Reconcile
         // it even if Darwin notifications were coalesced or delivered out of order.
         DispatchQueue.main.async { [weak self] in
@@ -186,7 +424,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             withTimeInterval: SteamPackRuntimeRefreshPolicy.heartbeatInterval,
             repeats: true
         ) { [weak self] _ in
-            self?.publishState(reloadControls: false)
+            guard let self else { return }
+            if !self.reconcilePendingControlRequestIfNeeded() {
+                self.publishState(reloadControls: false)
+            }
         }
         stateRefreshTimer = Timer.scheduledTimer(
             withTimeInterval: SteamPackRuntimeRefreshPolicy.fullStateInterval,
@@ -222,31 +463,121 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         persistLocalIntent(currentMode)
     }
 
-    private func publishState(reloadControls: Bool = true) {
-        let published = SteamPackShared.publishApplied(
-            keepAwake: sleepToggle.isDisableSleep || clamshellMode.isOn,
+    @discardableResult
+    private func publishState(
+        reloadControls: Bool = true,
+        automaticReloadChannel: SteamPackControlChannel? = nil,
+        now: Date = Date()
+    ) -> Bool {
+        let controlState = SteamPackControlSurfaceState(
+            keepAwake: sleepToggle.isDisableSleep,
             clamshell: clamshellMode.isOn
         )
+        let publicationWasInvalid = appliedStatePersistenceFailed
+        let previousPublishedState = lastPublishedControlState
+        let currentRequest = SteamPackShared.readControlRequest()
+        let currentAcknowledgement = lastControlAcknowledgement.flatMap {
+            $0.requestRevision == lastAcceptedControlRevision
+                && currentRequest.revision == $0.requestRevision
+                ? $0
+                : nil
+        }
+        let published = SteamPackShared.publishApplied(
+            keepAwake: controlState.keepAwake,
+            clamshell: controlState.clamshell,
+            requestRevision: lastAcceptedControlRevision,
+            requestSource: currentAcknowledgement?.source,
+            requestSucceeded: currentAcknowledgement?.succeeded,
+            now: now
+        )
         handleAppliedStatePublication(published)
-        guard reloadControls else { return }
-        reloadControlCenterState()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.reloadControlCenterState()
+        let reloadDecision = SteamPackControlReloadDecision.decide(
+            publicationSucceeded: published,
+            publicationWasInvalid: publicationWasInvalid,
+            reloadStateChanges: reloadControls,
+            previous: lastPublishedControlState,
+            current: controlState
+        ).suppressingAutomaticReload(for: automaticReloadChannel)
+        requestControlCenterReload(reloadDecision)
+        if published {
+            if previousPublishedState != controlState {
+                controlReloadRetryWorkItem?.cancel()
+                controlReloadRetryWorkItem = nil
+            }
+            // This tracks durable publication, not whether WidgetKit accepted a
+            // reload request. Heartbeats and auto-reloaded source controls still
+            // establish the comparison base for the next real state change.
+            lastPublishedControlState = controlState
+            if reloadControls,
+               reloadDecision != .none {
+                // For a Control Center action, the decision already suppresses
+                // the tapped source because macOS reloads it after `perform()`.
+                // Retry the changed sibling once as well: WidgetKit can drop the
+                // first sibling reload while the panel is becoming visible, which
+                // otherwise leaves Closed Lid ON beside a stale Keep Awake OFF.
+                scheduleControlCenterReloadRetry(
+                    reloadDecision,
+                    for: controlState
+                )
+            }
+        } else if !published {
+            // A failed write removes the applied record so providers report
+            // unavailable. The first failure reloads both controls to invalidate
+            // the prior value; recovery reloads both again even if the Booleans
+            // match the last durable publication.
+            lastPublishedControlState = nil
+        }
+        return published
+    }
+
+    private func requestControlCenterReload(
+        _ decision: SteamPackControlReloadDecision
+    ) {
+        if decision.keepAwake {
+            ControlCenter.shared.reloadControls(ofKind: SteamPackShared.keepAwakeKind)
+        }
+        if decision.clamshell {
+            ControlCenter.shared.reloadControls(ofKind: SteamPackShared.clamshellKind)
         }
     }
 
-    private func reloadControlCenterState() {
-        // Per-kind reloads target both controls; reloadAllControls is the
-        // strongest additional invalidation API exposed by WidgetKit for
-        // Control Widgets. WidgetCenter timeline reloads apply to widgets, not
-        // ControlValueProvider state, so they are intentionally not used here.
-        ControlCenter.shared.reloadControls(ofKind: SteamPackShared.keepAwakeKind)
-        ControlCenter.shared.reloadControls(ofKind: SteamPackShared.clamshellKind)
-        ControlCenter.shared.reloadAllControls()
+    private func scheduleControlCenterReloadRetry(
+        _ decision: SteamPackControlReloadDecision,
+        for state: SteamPackControlSurfaceState
+    ) {
+        controlReloadRetryWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.controlReloadRetryWorkItem = nil
+            guard !self.appliedStatePersistenceFailed,
+                  self.lastPublishedControlState == state else { return }
+            // WidgetKit can mark a non-visible control as needing reload without
+            // refreshing the tile that becomes visible a fraction of a second
+            // later. One targeted retry closes that race without periodic reload
+            // traffic or a whole-extension reload.
+            self.requestControlCenterReload(decision)
+        }
+        controlReloadRetryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + SteamPackRuntimeRefreshPolicy.controlReloadRetryDelay,
+            execute: workItem
+        )
+    }
+
+    @discardableResult
+    private func reconcilePendingControlRequestIfNeeded() -> Bool {
+        let request = SteamPackShared.readControlRequest()
+        guard request.revision > lastAcceptedControlRevision else { return false }
+        // Darwin notifications are the low-latency path. This heartbeat check
+        // is a bounded fallback if a notification is coalesced or lost.
+        reconcileControlRequests()
+        return true
     }
 
     private func handleAppliedStatePublication(_ succeeded: Bool) {
         if succeeded {
+            appliedStateExpiryReloadWorkItem?.cancel()
+            appliedStateExpiryReloadWorkItem = nil
             guard appliedStatePersistenceFailed else { return }
             appliedStatePersistenceFailed = false
             updateSafetyMenuItem()
@@ -256,12 +587,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if !appliedStatePersistenceFailed {
             appliedStatePersistenceFailed = true
+            scheduleAppliedStateExpiryReload()
             PowerSafetyNotifier.notifyControlFailure(SteamPackL10n.text(
                 "SteamPack could not publish its applied state. Control Center may be stale; the app will retry."
             ))
         }
         updateSafetyMenuItem()
         updateIcon()
+    }
+
+    private func scheduleAppliedStateExpiryReload() {
+        guard appliedStateExpiryReloadWorkItem == nil else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.appliedStateExpiryReloadWorkItem = nil
+            guard self.appliedStatePersistenceFailed else { return }
+            // If invalidation of the previous record also failed, it can remain
+            // readable until its freshness window closes. Reload once after that
+            // boundary so a cached ON tile cannot survive indefinitely.
+            self.requestControlCenterReload(.both)
+        }
+        appliedStateExpiryReloadWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + SteamPackShared.appliedStateMaxAge + 0.25,
+            execute: workItem
+        )
     }
 
     // MARK: - Safety
@@ -359,6 +709,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func persistLocalIntent(
         _ mode: SteamPackControlPolicy.DesiredMode
     ) -> Bool {
+        // A local menu, timer, watchdog, or external-system observation starts a
+        // new authority chain. Do not carry a prior Control Center outcome into
+        // the applied record for that local transition.
+        lastControlAcknowledgement = nil
         let currentRequest = SteamPackShared.readControlRequest()
         let protectedRevision = max(
             lastAcceptedControlRevision,
@@ -450,12 +804,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func acceptNewerControlRequest(_ request: SteamPackControlRequest) {
-        let resolution = localIntentBarrier.resolve(request)
-        guard resolution.acceptedIncomingRequest else { return }
-        lastAcceptedControlRevision = max(lastAcceptedControlRevision, request.revision)
+        guard request.revision > lastAcceptedControlRevision else { return }
+        // Leave both the revision and local-intent barrier untouched until the
+        // normal reconciliation path actually accepts and actuates this record.
+        // Advancing the revision here would make that path skip the same request.
         localIntentRetryWorkItem?.cancel()
         localIntentRetryWorkItem = nil
-        localIntentPersistenceFailed = false
         DispatchQueue.main.async { [weak self] in
             self?.reconcileControlRequests()
         }
@@ -555,7 +909,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(scheduledMenuItem)
     }
 
-    private func updateMenu(refreshRuntimeState: Bool = true) {
+    private func updateMenu(
+        refreshRuntimeState: Bool = true,
+        publishControlState: Bool = true
+    ) {
         if refreshRuntimeState {
             self.refreshRuntimeState()
         }
@@ -570,7 +927,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             + SteamPackL10n.text("Start at Login")
         updateSafetyMenuItem()
         updateIcon()
-        publishState()
+        if publishControlState {
+            publishState()
+        }
     }
 
     private func updateSafetyMenuItem() {
@@ -717,12 +1076,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastSafetyEvent = nil
         cancelTimerWithoutUpdating()
         let wasOn = clamshellMode.isOn
-        if wasOn { recordLocalOffIntent() }
-        let result = wasOn ? clamshellMode.set(false) : enableClamshell()
-        if case .failed(let message) = result {
-            showAlert(title: SteamPackL10n.text("Closed-Lid Mode"), message: message)
-        } else if !wasOn {
-            syncLocalControlIntent()
+        if wasOn {
+            // Match the Control Center state machine: Closed Lid OFF returns
+            // to Keep Awake. Keep Awake OFF is the single transition back to
+            // normal sleep from either surface.
+            persistLocalIntent(.keepAwake)
+            if let message = transitionToKeepAwake() {
+                syncLocalControlIntent()
+                showAlert(
+                    title: SteamPackL10n.text("Closed-Lid Mode"),
+                    message: message
+                )
+            } else {
+                syncLocalControlIntent()
+            }
+        } else {
+            let result = enableClamshell()
+            if case .failed(let message) = result {
+                showAlert(
+                    title: SteamPackL10n.text("Closed-Lid Mode"),
+                    message: message
+                )
+            } else {
+                syncLocalControlIntent()
+            }
         }
         updateMenu()
     }
@@ -776,6 +1153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+        clamshellMode.refreshAuthorization()
         updateMenu()
     }
 
@@ -860,6 +1238,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         heartbeatTimer?.invalidate()
         stateRefreshTimer?.invalidate()
+        controlReloadRetryWorkItem?.cancel()
+        controlReloadRetryWorkItem = nil
+        appliedStateExpiryReloadWorkItem?.cancel()
+        appliedStateExpiryReloadWorkItem = nil
         safetyMonitor.stop()
         cancelTimerWithoutUpdating()
         let report = stopAllKeepAwakeModes()
@@ -867,12 +1249,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = recordLocalOffIntent()
         localIntentRetryWorkItem?.cancel()
         localIntentRetryWorkItem = nil
-        SteamPackShared.publishApplied(keepAwake: false, clamshell: false)
+        SteamPackShared.publishApplied(
+            keepAwake: false,
+            clamshell: false,
+            requestRevision: lastAcceptedControlRevision
+        )
         SteamPackShared.clearHeartbeat()
         // Graceful termination can explicitly invalidate visible Control
         // Center state. A crash cannot execute this path and remains part of
         // the required installed-build E2E matrix.
-        reloadControlCenterState()
+        lastPublishedControlState = nil
+        requestControlCenterReload(.both)
         ProcessInfo.processInfo.enableSuddenTermination()
     }
 }

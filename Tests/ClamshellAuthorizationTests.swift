@@ -12,7 +12,8 @@ final class ClamshellAuthorizationTests: XCTestCase {
         XCTAssertNotEqual(first.sudoersPath, second.sudoersPath)
         XCTAssertEqual(
             first.rule,
-            "#501 ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0\n"
+            "Defaults!/usr/bin/pmset command_timeout=5\n"
+                + "#501 ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0\n"
         )
     }
 

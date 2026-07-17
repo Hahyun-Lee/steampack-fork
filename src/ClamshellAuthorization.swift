@@ -13,7 +13,12 @@ struct ClamshellAuthorizationLayout {
     }
 
     var rule: String {
-        "#\(userID) ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0\n"
+        // The command_timeout Defaults line makes sudo itself terminate a stuck
+        // `pmset` after 5s, so a privileged child cannot outlive the app's own
+        // bounded runner. Keep byte-identical to scripts/steampack-pmset-sudoers
+        // so the in-app installer and the shell installer produce the same file.
+        "Defaults!/usr/bin/pmset command_timeout=5\n"
+            + "#\(userID) ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0\n"
     }
 
     static func legacyRules(userName: String) -> [String]? {
@@ -152,9 +157,10 @@ enum ClamshellAuthorization {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
+            return try SteamPackProcessTimeout.run(
+                process,
+                timeout: SteamPackProcessTimeout.statusQuery
+            ) == 0
         } catch {
             return false
         }
@@ -167,9 +173,10 @@ enum ClamshellAuthorization {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
+            return try SteamPackProcessTimeout.run(
+                process,
+                timeout: SteamPackProcessTimeout.validation
+            ) == 0
         } catch {
             return false
         }
