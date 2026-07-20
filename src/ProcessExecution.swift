@@ -4,7 +4,10 @@ import Darwin
 
 enum SteamPackProcessTimeout {
     static let statusQuery: TimeInterval = 0.5
-    static let privilegedMutation: TimeInterval = 1
+    // The sudoers TIMEOUT tag stops pmset after one second. Keep the outer
+    // runner longer so sudo can terminate and reap its privileged child before
+    // SteamPack ever has to terminate sudo itself.
+    static let privilegedMutation: TimeInterval = 1.75
     static let validation: TimeInterval = 3
     private static let terminationGrace: TimeInterval = 0.2
 

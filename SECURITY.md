@@ -12,4 +12,4 @@ Include the affected macOS version, SteamPack commit or version, reproduction st
 
 ## Privilege boundary
 
-SteamPack's optional sudoers entry allows only the exact commands `/usr/bin/pmset disablesleep 1` and `/usr/bin/pmset disablesleep 0`. It does not grant a shell, wildcard arguments, or password access. Changes that broaden this rule are considered security-sensitive and require explicit review.
+SteamPack's optional, numeric-UID-scoped sudoers entry allows only the exact commands `/usr/bin/pmset disablesleep 1` and `/usr/bin/pmset disablesleep 0`, each with a one-second command timeout. It does not grant a shell, wildcard arguments, or password access. Changes that broaden this rule are considered security-sensitive and require explicit review.

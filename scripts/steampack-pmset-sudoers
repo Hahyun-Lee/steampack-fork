@@ -1,2 +1,1 @@
-Defaults!/usr/bin/pmset command_timeout=5
-#__UID__ ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0
+#__UID__ ALL=(root) TIMEOUT=1s NOPASSWD: /usr/bin/pmset disablesleep 1, TIMEOUT=1s NOPASSWD: /usr/bin/pmset disablesleep 0

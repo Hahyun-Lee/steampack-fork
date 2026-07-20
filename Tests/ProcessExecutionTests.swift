@@ -12,6 +12,17 @@ final class ProcessExecutionTests: XCTestCase {
         XCTAssertLessThan(SteamPackProcessTimeout.statusQuery, lifetime)
         XCTAssertLessThan(SteamPackProcessTimeout.privilegedMutation, lifetime)
         XCTAssertLessThan(SteamPackProcessTimeout.validation, lifetime)
+        XCTAssertGreaterThan(
+            SteamPackProcessTimeout.privilegedMutation,
+            TimeInterval(ClamshellAuthorizationLayout.commandTimeoutSeconds),
+            "sudo must get time to terminate and reap pmset before the outer runner stops sudo"
+        )
+        XCTAssertLessThan(
+            (2 * SteamPackProcessTimeout.privilegedMutation)
+                + (2 * SteamPackProcessTimeout.statusQuery),
+            lifetime,
+            "stale-lease recovery, enable, and both status checks must fit one control request"
+        )
     }
 
     func testBoundedProcessRunnerReturnsSuccessfulExitStatus() throws {

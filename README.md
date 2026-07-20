@@ -67,7 +67,7 @@ The Closed Lid permission allows only these two commands:
 
 SteamPack does not store or pass along your administrator password.
 
-The permission file is scoped to the current account's numeric user ID. **Install Closed-Lid Permission…** safely migrates the old shared rule only when it exactly belongs to the current account, and **Remove Closed-Lid Permission…** never removes another account's rule.
+The permission file is versioned and scoped to the current account's numeric user ID. Each exact command has a one-second privileged timeout. **Install Closed-Lid Permission…** migrates an older account-scoped or shared SteamPack rule only when its complete contents match a rule SteamPack previously installed. A modified account-scoped rule is preserved and the migration stops for manual review; **Remove Closed-Lid Permission…** never removes another account's rule.
 
 ## Add the Control Center controls
 

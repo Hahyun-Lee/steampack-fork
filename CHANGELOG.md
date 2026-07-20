@@ -14,12 +14,13 @@
 - Blocks or turns Closed Lid off at or below 20% battery, when power telemetry is unavailable, under serious or critical thermal pressure, or when its timer ends.
 - Isolates every Closed Lid enable cycle with a token and process-start identity so stale watchdogs and reused PIDs cannot take over a newer session.
 - Serializes Control Center requests in one revisioned record so late or concurrent notifications cannot revive an older mode.
-- Publishes applied state and app liveness together in one atomic record; a missing, corrupt, failed-write, expired, or invalidated record is unavailable rather than a verified OFF.
+- Publishes applied state and app liveness together in one atomic record. Missing, corrupt, expired, or invalidated records are unavailable rather than a verified OFF; after a failed replacement write, the last durable record remains readable only until its six-second freshness window expires.
 - Periodically rereads macOS power-management state so changes made outside SteamPack are reflected in the app and Control Center.
 - Waits for a revisioned applied-state acknowledgement before a Control Center action succeeds, recovers a missed Darwin notification on the heartbeat, and ignores duplicated request revisions.
 - Uses one Closed Lid state transition on both surfaces: Closed Lid OFF returns to Keep Awake, and Keep Awake OFF returns to normal sleep.
+- Keeps Keep Awake and Closed Lid refresh retries independent, so a rapid Closed Lid ON/OFF transition cannot cancel the still-needed Keep Awake refresh. Startup and quit invalidate provider state with an expired tombstone instead of synchronously unlinking state files, avoiding the production main-thread freeze observed during file removal.
 - Limits administrator access to the two `pmset disablesleep` commands used by Closed Lid, with separate numeric-UID rules so one account cannot replace or remove another account's permission.
-- Bounds the privileged `pmset` call with a `command_timeout` in the sudoers rule so sudo terminates a stuck child even if the app's own runner cannot reach it, and reverifies the live `SleepDisabled` state after enabling Closed Lid so a zero exit code alone never publishes success.
+- Gives each of the two exact privileged `pmset` commands its own one-second sudo timeout, migrates the account-scoped rule without accepting the older broad timeout form, and leaves the app's outer runner enough time for sudo to terminate and reap its child. Closed Lid reverifies the live `SleepDisabled` state after both enabling and disabling, so a zero exit code alone never publishes success or discards the recovery lease.
 
 ### Language and documentation
 
