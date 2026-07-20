@@ -126,8 +126,9 @@ enum ClamshellAuthorization {
               !FileManager.default.fileExists(
                 atPath: layout.previousScopedSudoersPath
               ) else {
-            // Shared and v1 account-scoped rules are deliberately not accepted:
-            // choosing Install migrates to the per-command-timeout v2 rule.
+            // A current-account v1 rule is not accepted: choosing Install must
+            // migrate it to v2. A shared legacy path may belong to another local
+            // account, so a nonmatching shared rule is deliberately tolerated.
             return false
         }
         return canRun(arguments: ["-n", "-l", "/usr/bin/pmset", "disablesleep", "1"])
