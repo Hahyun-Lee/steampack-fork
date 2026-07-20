@@ -212,6 +212,87 @@ final class AppStatePolicyTests: XCTestCase {
         XCTAssertEqual(decision, .none)
     }
 
+    func testRapidClosedLidOnOffPreservesPendingKeepAwakeRetry() throws {
+        let normal = SteamPackControlSurfaceState(
+            keepAwake: false,
+            clamshell: false
+        )
+        let closedLid = SteamPackControlSurfaceState(
+            keepAwake: true,
+            clamshell: true
+        )
+        let keepAwake = SteamPackControlSurfaceState(
+            keepAwake: true,
+            clamshell: false
+        )
+        var retryState = SteamPackControlReloadRetryState()
+
+        let closedLidOnDecision = closedLid
+            .changedControls(comparedTo: normal)
+            .suppressingAutomaticReload(for: .clamshell)
+        let closedLidOnUpdate = retryState.update(
+            for: closedLid,
+            scheduling: closedLidOnDecision
+        )
+        let keepAwakeToken = try XCTUnwrap(
+            closedLidOnUpdate.keepAwakeToken
+        )
+        XCTAssertNil(closedLidOnUpdate.clamshellToken)
+
+        let closedLidOffDecision = keepAwake
+            .changedControls(comparedTo: closedLid)
+            .suppressingAutomaticReload(for: .clamshell)
+        XCTAssertEqual(closedLidOffDecision, .none)
+        let closedLidOffUpdate = retryState.update(
+            for: keepAwake,
+            scheduling: closedLidOffDecision
+        )
+
+        XCTAssertEqual(closedLidOffUpdate.cancelled, .none)
+        XCTAssertNil(closedLidOffUpdate.keepAwakeToken)
+        XCTAssertEqual(
+            retryState.pendingToken(for: .keepAwake),
+            keepAwakeToken
+        )
+        XCTAssertTrue(retryState.consume(keepAwakeToken))
+        XCTAssertNil(retryState.pendingToken(for: .keepAwake))
+    }
+
+    func testRetryIsCancelledOnlyWhenItsOwnControlValueChanges() throws {
+        let closedLid = SteamPackControlSurfaceState(
+            keepAwake: true,
+            clamshell: true
+        )
+        let normal = SteamPackControlSurfaceState(
+            keepAwake: false,
+            clamshell: false
+        )
+        var retryState = SteamPackControlReloadRetryState()
+        let firstUpdate = retryState.update(
+            for: closedLid,
+            scheduling: .both
+        )
+        let staleKeepAwakeToken = try XCTUnwrap(firstUpdate.keepAwakeToken)
+        let staleClamshellToken = try XCTUnwrap(firstUpdate.clamshellToken)
+
+        let secondUpdate = retryState.update(
+            for: normal,
+            scheduling: .both
+        )
+
+        XCTAssertEqual(secondUpdate.cancelled, .both)
+        XCTAssertFalse(retryState.consume(staleKeepAwakeToken))
+        XCTAssertFalse(retryState.consume(staleClamshellToken))
+        XCTAssertNotEqual(
+            secondUpdate.keepAwakeToken,
+            staleKeepAwakeToken
+        )
+        XCTAssertNotEqual(
+            secondUpdate.clamshellToken,
+            staleClamshellToken
+        )
+    }
+
     func testAppOriginatedTransitionReloadsEveryChangedControl() {
         let normal = SteamPackControlSurfaceState(
             keepAwake: false,

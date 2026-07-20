@@ -257,8 +257,19 @@ final class ClamshellMode {
             return .failed(SteamPackL10n.text("macOS could not restore normal sleep."))
         }
 
+        // Keep the ownership lease and watchdog until the global postcondition
+        // is observable. Clearing them on a zero exit alone could leave
+        // SleepDisabled=1 with no process responsible for restoring normal
+        // sleep if pmset was terminated late or another writer raced us.
+        let restored = currentSystemStatus()
+        guard restored == false else {
+            isSystemStatusUnknown = (restored == nil)
+            return .failed(SteamPackL10n.text("macOS could not restore normal sleep."))
+        }
+
         isOn = false
         isExternallyDisabled = false
+        isSystemStatusUnknown = false
         let token = activeSessionToken
         if let token {
             ownershipStore.clearIfMatching(token: token)

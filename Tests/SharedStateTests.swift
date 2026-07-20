@@ -308,6 +308,10 @@ final class SharedStateTests: XCTestCase {
         ))
         XCTAssertNil(SteamPackShared.readAppliedState(now: now))
 
+        // Production code deliberately does not unlink a failed destination on
+        // the main thread. Model the external/storage condition recovering
+        // before the app publishes the durable rejection.
+        try FileManager.default.removeItem(at: appliedURL)
         XCTAssertTrue(SteamPackShared.publishApplied(
             keepAwake: false,
             clamshell: false,
@@ -591,7 +595,7 @@ final class SharedStateTests: XCTestCase {
         XCTAssertTrue(SteamPackShared.isAppAlive(now: offTime))
     }
 
-    func testAppliedWriteFailureImmediatelyInvalidatesPreviousOnState() throws {
+    func testUnreadableAppliedDestinationFailsClosedAfterWriteFailure() throws {
         let now = Date(timeIntervalSince1970: 100)
         XCTAssertTrue(SteamPackShared.publishApplied(
             keepAwake: true,
@@ -668,11 +672,18 @@ final class SharedStateTests: XCTestCase {
         ))
         XCTAssertTrue(SteamPackShared.readAppliedKeepAwake())
 
-        SteamPackShared.clearHeartbeat()
+        XCTAssertTrue(SteamPackShared.clearHeartbeat())
 
         XCTAssertFalse(SteamPackShared.isAppAlive(now: crashTime))
         XCTAssertFalse(SteamPackShared.readAppliedKeepAwake())
         XCTAssertFalse(SteamPackShared.readAppliedClamshell())
+        let appliedURL = SteamPackShared.stateFileURL("applied-state.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: appliedURL.path))
+        let tombstone = try? JSONDecoder().decode(
+            SteamPackAppliedState.self,
+            from: Data(contentsOf: appliedURL)
+        )
+        XCTAssertEqual(tombstone?.updatedAt, .distantPast)
     }
 
     func testStaleAppliedRecordMakesProviderStateUnavailable() {

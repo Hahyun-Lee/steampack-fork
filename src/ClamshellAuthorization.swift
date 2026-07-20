@@ -5,20 +5,35 @@ import CryptoKit
 
 struct ClamshellAuthorizationLayout {
     static let legacySudoersPath = "/etc/sudoers.d/steampack-pmset"
+    static let commandTimeoutSeconds = 1
 
     let userID: uid_t
 
     var sudoersPath: String {
+        "/etc/sudoers.d/steampack-pmset-v2-\(userID)"
+    }
+
+    var previousScopedSudoersPath: String {
         "/etc/sudoers.d/steampack-pmset-\(userID)"
     }
 
     var rule: String {
-        // The command_timeout Defaults line makes sudo itself terminate a stuck
-        // `pmset` after 5s, so a privileged child cannot outlive the app's own
-        // bounded runner. Keep byte-identical to scripts/steampack-pmset-sudoers
-        // so the in-app installer and the shell installer produce the same file.
-        "Defaults!/usr/bin/pmset command_timeout=5\n"
-            + "#\(userID) ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0\n"
+        // TIMEOUT is attached to each exact command, so this account's two
+        // SteamPack grants cannot leave a privileged pmset child behind. Do not
+        // use a Defaults!/usr/bin/pmset rule: that would also alter unrelated
+        // pmset grants. Keep this byte-identical to the rendered shell template.
+        "#\(userID) ALL=(root) "
+            + "TIMEOUT=\(Self.commandTimeoutSeconds)s NOPASSWD: /usr/bin/pmset disablesleep 1, "
+            + "TIMEOUT=\(Self.commandTimeoutSeconds)s NOPASSWD: /usr/bin/pmset disablesleep 0\n"
+    }
+
+    var previousScopedRules: [String] {
+        let commandRule = "#\(userID) ALL=(root) NOPASSWD: "
+            + "/usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0\n"
+        return [
+            commandRule,
+            "Defaults!/usr/bin/pmset command_timeout=5\n" + commandRule,
+        ]
     }
 
     static func legacyRules(userName: String) -> [String]? {
@@ -48,13 +63,24 @@ struct ClamshellAuthorizationLayout {
             + " >/dev/null"
             + " && /bin/mv -f " + quotedRootTemporaryPath + " "
             + Self.shellQuote(sudoersPath)
+            + " && " + exactCleanupCommand(
+                expectedRules: previousScopedRules,
+                path: previousScopedSudoersPath,
+                mismatchIsFailure: true
+            )
             + " && " + legacyCleanupCommand(expectedLegacyRules: expectedLegacyRules)
-            + " || status=$?; /bin/rm -f " + quotedRootTemporaryPath
+            + " || status=$?; if [ \"$status\" -ne 0 ]; then /bin/rm -f "
+            + Self.shellQuote(sudoersPath) + "; fi; /bin/rm -f " + quotedRootTemporaryPath
             + "; exit $status"
     }
 
     func removalCommand(expectedLegacyRules: [String]) -> String {
         "/bin/rm -f " + Self.shellQuote(sudoersPath)
+            + " && " + exactCleanupCommand(
+                expectedRules: previousScopedRules,
+                path: previousScopedSudoersPath,
+                mismatchIsFailure: true
+            )
             + " && " + legacyCleanupCommand(expectedLegacyRules: expectedLegacyRules)
     }
 
@@ -62,14 +88,24 @@ struct ClamshellAuthorizationLayout {
         expectedLegacyRules: [String],
         legacyPath: String = Self.legacySudoersPath
     ) -> String {
-        guard !expectedLegacyRules.isEmpty else { return ":" }
-        let comparisons = expectedLegacyRules.map { expected in
+        exactCleanupCommand(expectedRules: expectedLegacyRules, path: legacyPath)
+    }
+
+    func exactCleanupCommand(
+        expectedRules: [String],
+        path: String,
+        mismatchIsFailure: Bool = false
+    ) -> String {
+        guard !expectedRules.isEmpty else { return ":" }
+        let quotedPath = Self.shellQuote(path)
+        let comparisons = expectedRules.map { expected in
             "[ \"$actual\" = " + Self.shellQuote(Self.sha256Hex(expected)) + " ]"
         }.joined(separator: " || ")
-        return "actual=$(/usr/bin/shasum -a 256 " + Self.shellQuote(legacyPath)
-            + " 2>/dev/null | /usr/bin/awk '{print $1}'); if "
+        let mismatchCommand = mismatchIsFailure ? "false" : ":"
+        return "{ if [ -e " + quotedPath + " ]; then actual=$(/usr/bin/shasum -a 256 "
+            + quotedPath + " 2>/dev/null | /usr/bin/awk '{print $1}'); if "
             + comparisons + "; then /bin/rm -f "
-            + Self.shellQuote(legacyPath) + "; fi"
+            + quotedPath + "; else " + mismatchCommand + "; fi; fi; }"
     }
 
     private static func sha256Hex(_ value: String) -> String {
@@ -86,9 +122,12 @@ struct ClamshellAuthorizationLayout {
 enum ClamshellAuthorization {
     static func isInstalled() -> Bool {
         let layout = ClamshellAuthorizationLayout(userID: getuid())
-        guard FileManager.default.fileExists(atPath: layout.sudoersPath) else {
-            // A pre-1.4 shared rule is deliberately not considered installed.
-            // Choosing Install performs a one-time, account-scoped migration.
+        guard FileManager.default.fileExists(atPath: layout.sudoersPath),
+              !FileManager.default.fileExists(
+                atPath: layout.previousScopedSudoersPath
+              ) else {
+            // Shared and v1 account-scoped rules are deliberately not accepted:
+            // choosing Install migrates to the per-command-timeout v2 rule.
             return false
         }
         return canRun(arguments: ["-n", "-l", "/usr/bin/pmset", "disablesleep", "1"])
@@ -116,7 +155,7 @@ enum ClamshellAuthorization {
 
             try runPrivileged(layout.installCommand(
                 ruleURL: temporaryURL,
-                rootTemporaryPath: "/etc/sudoers.d/.steampack-pmset-\(userID)-\(UUID().uuidString)",
+                rootTemporaryPath: "/etc/sudoers.d/.steampack-pmset-v2-\(userID)-\(UUID().uuidString)",
                 expectedLegacyRules: legacyRules
             ))
 

@@ -91,6 +91,110 @@ struct SteamPackControlReloadDecision: Equatable {
     }
 }
 
+struct SteamPackControlReloadRetryToken: Equatable {
+    let channel: SteamPackControlChannel
+    let expectedValue: Bool
+    let generation: UInt64
+}
+
+struct SteamPackControlReloadRetryUpdate: Equatable {
+    let cancelled: SteamPackControlReloadDecision
+    let keepAwakeToken: SteamPackControlReloadRetryToken?
+    let clamshellToken: SteamPackControlReloadRetryToken?
+}
+
+struct SteamPackControlReloadRetryState {
+    private var keepAwakeToken: SteamPackControlReloadRetryToken?
+    private var clamshellToken: SteamPackControlReloadRetryToken?
+    private var nextGeneration: UInt64 = 0
+
+    mutating func update(
+        for state: SteamPackControlSurfaceState,
+        scheduling decision: SteamPackControlReloadDecision
+    ) -> SteamPackControlReloadRetryUpdate {
+        let cancelKeepAwake = keepAwakeToken.map {
+            $0.expectedValue != state.keepAwake
+        } ?? false
+        let cancelClamshell = clamshellToken.map {
+            $0.expectedValue != state.clamshell
+        } ?? false
+
+        if cancelKeepAwake {
+            keepAwakeToken = nil
+        }
+        if cancelClamshell {
+            clamshellToken = nil
+        }
+
+        var scheduledKeepAwake: SteamPackControlReloadRetryToken?
+        if decision.keepAwake, keepAwakeToken == nil {
+            scheduledKeepAwake = makeToken(
+                channel: .keepAwake,
+                expectedValue: state.keepAwake
+            )
+            keepAwakeToken = scheduledKeepAwake
+        }
+
+        var scheduledClamshell: SteamPackControlReloadRetryToken?
+        if decision.clamshell, clamshellToken == nil {
+            scheduledClamshell = makeToken(
+                channel: .clamshell,
+                expectedValue: state.clamshell
+            )
+            clamshellToken = scheduledClamshell
+        }
+
+        return SteamPackControlReloadRetryUpdate(
+            cancelled: SteamPackControlReloadDecision(
+                keepAwake: cancelKeepAwake,
+                clamshell: cancelClamshell
+            ),
+            keepAwakeToken: scheduledKeepAwake,
+            clamshellToken: scheduledClamshell
+        )
+    }
+
+    func pendingToken(
+        for channel: SteamPackControlChannel
+    ) -> SteamPackControlReloadRetryToken? {
+        switch channel {
+        case .keepAwake:
+            return keepAwakeToken
+        case .clamshell:
+            return clamshellToken
+        }
+    }
+
+    mutating func consume(_ token: SteamPackControlReloadRetryToken) -> Bool {
+        switch token.channel {
+        case .keepAwake:
+            guard keepAwakeToken == token else { return false }
+            keepAwakeToken = nil
+        case .clamshell:
+            guard clamshellToken == token else { return false }
+            clamshellToken = nil
+        }
+        return true
+    }
+
+    mutating func cancelAll() {
+        keepAwakeToken = nil
+        clamshellToken = nil
+    }
+
+    private mutating func makeToken(
+        channel: SteamPackControlChannel,
+        expectedValue: Bool
+    ) -> SteamPackControlReloadRetryToken {
+        nextGeneration &+= 1
+        return SteamPackControlReloadRetryToken(
+            channel: channel,
+            expectedValue: expectedValue,
+            generation: nextGeneration
+        )
+    }
+}
+
 enum SteamPackKeepAwakeTransitionStep: Equatable {
     case startKeepAwake
     case disableClosedLid
@@ -135,7 +239,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var localIntentBarrier = SteamPackLocalIntentBarrier()
     private var lastAcceptedControlRevision: UInt64 = 0
     private var localIntentRetryWorkItem: DispatchWorkItem?
-    private var controlReloadRetryWorkItem: DispatchWorkItem?
+    private var keepAwakeReloadRetryWorkItem: DispatchWorkItem?
+    private var clamshellReloadRetryWorkItem: DispatchWorkItem?
+    private var controlReloadRetryState = SteamPackControlReloadRetryState()
     private var appliedStateExpiryReloadWorkItem: DispatchWorkItem?
     private var localIntentPersistenceFailed = false
     private var appliedStatePersistenceFailed = false
@@ -419,7 +525,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startStatePublishing() {
-        publishState(reloadControls: false)
+        // A prior process can leave a cached ON tile behind after a crash. The
+        // first durable state of this launch must actively replace that cache;
+        // later heartbeats remain silent when the state is unchanged.
+        publishState(reloadControls: true)
         heartbeatTimer = Timer.scheduledTimer(
             withTimeInterval: SteamPackRuntimeRefreshPolicy.heartbeatInterval,
             repeats: true
@@ -474,7 +583,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             clamshell: clamshellMode.isOn
         )
         let publicationWasInvalid = appliedStatePersistenceFailed
-        let previousPublishedState = lastPublishedControlState
         let currentRequest = SteamPackShared.readControlRequest()
         let currentAcknowledgement = lastControlAcknowledgement.flatMap {
             $0.requestRevision == lastAcceptedControlRevision
@@ -500,31 +608,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ).suppressingAutomaticReload(for: automaticReloadChannel)
         requestControlCenterReload(reloadDecision)
         if published {
-            if previousPublishedState != controlState {
-                controlReloadRetryWorkItem?.cancel()
-                controlReloadRetryWorkItem = nil
-            }
             // This tracks durable publication, not whether WidgetKit accepted a
             // reload request. Heartbeats and auto-reloaded source controls still
             // establish the comparison base for the next real state change.
             lastPublishedControlState = controlState
-            if reloadControls,
-               reloadDecision != .none {
-                // For a Control Center action, the decision already suppresses
-                // the tapped source because macOS reloads it after `perform()`.
-                // Retry the changed sibling once as well: WidgetKit can drop the
-                // first sibling reload while the panel is becoming visible, which
-                // otherwise leaves Closed Lid ON beside a stale Keep Awake OFF.
-                scheduleControlCenterReloadRetry(
-                    reloadDecision,
-                    for: controlState
-                )
-            }
-        } else if !published {
-            // A failed write removes the applied record so providers report
-            // unavailable. The first failure reloads both controls to invalidate
-            // the prior value; recovery reloads both again even if the Booleans
-            // match the last durable publication.
+            // Reconcile each retry independently. A rapid Closed Lid ON -> OFF
+            // transition changes only the Closed Lid value; the Keep Awake value
+            // remains ON and must retain the retry created by the first action.
+            // For a Control Center action, `reloadDecision` already suppresses
+            // the tapped source because macOS reloads it after `perform()`.
+            updateControlCenterReloadRetries(
+                scheduling: reloadControls ? reloadDecision : .none,
+                for: controlState
+            )
+        } else {
+            // Never let a delayed retry advertise a value that the app could not
+            // durably publish. The prior record is left in place so this main-
+            // thread path cannot wedge in unlink; its timestamp fails closed at
+            // appliedStateMaxAge. The first failure reloads both controls, and
+            // recovery reloads both again even if the Booleans match the last
+            // durable publication.
+            cancelControlCenterReloadRetries()
             lastPublishedControlState = nil
         }
         return published
@@ -541,27 +645,89 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func scheduleControlCenterReloadRetry(
-        _ decision: SteamPackControlReloadDecision,
+    private func updateControlCenterReloadRetries(
+        scheduling decision: SteamPackControlReloadDecision,
         for state: SteamPackControlSurfaceState
     ) {
-        controlReloadRetryWorkItem?.cancel()
+        let update = controlReloadRetryState.update(
+            for: state,
+            scheduling: decision
+        )
+
+        if update.cancelled.keepAwake {
+            keepAwakeReloadRetryWorkItem?.cancel()
+            keepAwakeReloadRetryWorkItem = nil
+        }
+        if update.cancelled.clamshell {
+            clamshellReloadRetryWorkItem?.cancel()
+            clamshellReloadRetryWorkItem = nil
+        }
+
+        if let token = update.keepAwakeToken {
+            keepAwakeReloadRetryWorkItem = makeControlCenterReloadRetry(
+                token: token
+            )
+        }
+        if let token = update.clamshellToken {
+            clamshellReloadRetryWorkItem = makeControlCenterReloadRetry(
+                token: token
+            )
+        }
+    }
+
+    private func makeControlCenterReloadRetry(
+        token: SteamPackControlReloadRetryToken
+    ) -> DispatchWorkItem {
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.controlReloadRetryWorkItem = nil
+            guard let self,
+                  self.controlReloadRetryState.consume(token) else { return }
+
+            switch token.channel {
+            case .keepAwake:
+                self.keepAwakeReloadRetryWorkItem = nil
+            case .clamshell:
+                self.clamshellReloadRetryWorkItem = nil
+            }
+
             guard !self.appliedStatePersistenceFailed,
-                  self.lastPublishedControlState == state else { return }
+                  self.lastPublishedValue(for: token.channel)
+                    == token.expectedValue else { return }
             // WidgetKit can mark a non-visible control as needing reload without
             // refreshing the tile that becomes visible a fraction of a second
             // later. One targeted retry closes that race without periodic reload
-            // traffic or a whole-extension reload.
-            self.requestControlCenterReload(decision)
+            // traffic or a whole-extension reload. The target-only comparison
+            // intentionally ignores a sibling value that changed in the interim.
+            self.requestControlCenterReload(
+                SteamPackControlReloadDecision(
+                    keepAwake: token.channel == .keepAwake,
+                    clamshell: token.channel == .clamshell
+                )
+            )
         }
-        controlReloadRetryWorkItem = workItem
         DispatchQueue.main.asyncAfter(
             deadline: .now() + SteamPackRuntimeRefreshPolicy.controlReloadRetryDelay,
             execute: workItem
         )
+        return workItem
+    }
+
+    private func lastPublishedValue(
+        for channel: SteamPackControlChannel
+    ) -> Bool? {
+        switch channel {
+        case .keepAwake:
+            return lastPublishedControlState?.keepAwake
+        case .clamshell:
+            return lastPublishedControlState?.clamshell
+        }
+    }
+
+    private func cancelControlCenterReloadRetries() {
+        keepAwakeReloadRetryWorkItem?.cancel()
+        keepAwakeReloadRetryWorkItem = nil
+        clamshellReloadRetryWorkItem?.cancel()
+        clamshellReloadRetryWorkItem = nil
+        controlReloadRetryState.cancelAll()
     }
 
     @discardableResult
@@ -1238,8 +1404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         heartbeatTimer?.invalidate()
         stateRefreshTimer?.invalidate()
-        controlReloadRetryWorkItem?.cancel()
-        controlReloadRetryWorkItem = nil
+        cancelControlCenterReloadRetries()
         appliedStateExpiryReloadWorkItem?.cancel()
         appliedStateExpiryReloadWorkItem = nil
         safetyMonitor.stop()

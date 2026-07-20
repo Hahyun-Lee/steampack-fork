@@ -12,6 +12,6 @@
 
 ## 권한 경계
 
-SteamPack의 선택적 sudoers 항목은 `/usr/bin/pmset disablesleep 1`과 `/usr/bin/pmset disablesleep 0`이라는 정확한 명령 두 개만 허용합니다. shell, 와일드카드 인자, 비밀번호 접근 권한은 제공하지 않습니다. 이 규칙을 넓히는 변경은 보안상 민감한 변경으로 취급하며 명시적인 검토가 필요합니다.
+SteamPack의 선택적 sudoers 항목은 숫자 사용자 ID별로 분리되며 `/usr/bin/pmset disablesleep 1`과 `/usr/bin/pmset disablesleep 0`이라는 정확한 명령 두 개만 각각 1초 timeout으로 허용합니다. shell, 와일드카드 인자, 비밀번호 접근 권한은 제공하지 않습니다. 이 규칙을 넓히는 변경은 보안상 민감한 변경으로 취급하며 명시적인 검토가 필요합니다.
 
 [English](SECURITY.md)

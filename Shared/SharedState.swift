@@ -381,14 +381,14 @@ enum SteamPackShared {
             updatedAt: now
         )
         guard writeJSON(state, to: stateFileURL(appliedStateFile)) else {
-            // Best-effort immediate fail-closed invalidation. If removal is also
-            // denied, the previous record still expires within appliedStateMaxAge.
-            try? FileManager.default.removeItem(at: stateFileURL(appliedStateFile))
+            // Never synchronously unlink the prior record on the app's main
+            // thread. APFS/container unlink can block indefinitely (observed in
+            // production), freezing heartbeat publication and every menu action.
+            // The prior timestamp still fails closed after appliedStateMaxAge.
             return false
         }
-        // The atomic record timestamp is the liveness signal. Retire the legacy
-        // marker only after the replacement record is durable.
-        try? FileManager.default.removeItem(at: stateFileURL("app-heartbeat.state"))
+        // The atomic record takes precedence over the legacy marker. Leave the
+        // obsolete file untouched instead of risking a blocking unlink.
         return true
     }
 
@@ -397,9 +397,19 @@ enum SteamPackShared {
         writeString("app-heartbeat.state", String(now.timeIntervalSince1970))
     }
 
-    static func clearHeartbeat() {
-        try? FileManager.default.removeItem(at: stateFileURL(appliedStateFile))
-        try? FileManager.default.removeItem(at: stateFileURL("app-heartbeat.state"))
+    @discardableResult
+    static func clearHeartbeat() -> Bool {
+        // Publish an already-expired tombstone instead of deleting state files.
+        // Providers immediately report unavailable, while startup/quit can never
+        // wedge forever in `unlink`. Writing the legacy epoch prevents fallback
+        // migration from reviving a pre-record heartbeat if the atomic write fails.
+        let invalidated = publishApplied(
+            keepAwake: false,
+            clamshell: false,
+            now: .distantPast
+        )
+        let legacyInvalidated = writeString("app-heartbeat.state", "0")
+        return invalidated && legacyInvalidated
     }
 
     static func isAppAlive(now: Date = Date()) -> Bool {
