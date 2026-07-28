@@ -50,6 +50,20 @@ open /Applications/SteamPack.app
 
 Xcode에서 빌드하려면 `xcodegen generate`를 실행하고 `SteamPack.xcodeproj`를 엽니다. **Signing & Capabilities**에서 두 타깃의 팀을 선택한 뒤 **SteamPack** 스킴을 실행하세요.
 
+### Apple Development 팀 없이 로컬 프리뷰 체험하기
+
+Apple Development 팀을 아직 설정하지 않았더라도, 자신의 Mac에서만 시험할 수 있는 ad-hoc 서명 프리뷰를 만들 수 있습니다. 이 빌드는 **로컬 평가 전용**입니다. 다른 사람에게 전달하거나 업로드하거나 공개 배포 파일처럼 사용하지 마세요.
+
+```bash
+git clone https://github.com/Hahyun-Lee/steampack-fork.git
+cd steampack-fork
+brew install xcodegen
+scripts/build-local-adhoc.sh
+open build/adhoc/SteamPack.app
+```
+
+명령은 앱과 제어 센터 확장을 함께 로컬에서 올바르게 봉인해 만듭니다. 설치된 제어 센터 컨트롤까지 시험하려면 같은 번들을 `/Applications`에 복사하고 스크립트가 출력한 검증 명령을 실행하세요. 공개 배포에는 여전히 Developer ID 서명과 Apple 공증을 거친 DMG가 필요합니다.
+
 ## 사용하기
 
 메뉴 막대에서 SteamPack 아이콘을 누르고 필요한 모드를 선택합니다.

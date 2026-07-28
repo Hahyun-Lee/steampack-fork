@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Distribution
+
+- Added an explicit no-Apple-team local-preview path to both READMEs. It uses
+  the existing ad-hoc sealed build rather than implying that an unsigned or
+  unnotarized binary is safe to distribute.
+
 ## 1.4.0 Public Preview
 
 ### Controls
