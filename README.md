@@ -50,6 +50,26 @@ open /Applications/SteamPack.app
 
 To build in Xcode, run `xcodegen generate`, open `SteamPack.xcodeproj`, and select your team for both app targets under **Signing & Capabilities**. Then run the **SteamPack** scheme.
 
+### Try the local preview without an Apple Development team
+
+To evaluate SteamPack on your own Mac before you have an Apple Development
+team, build an ad-hoc, locally sealed preview. It is for local evaluation
+only—do not share, upload, or treat it as a public binary.
+
+```bash
+git clone https://github.com/Hahyun-Lee/steampack-fork.git
+cd steampack-fork
+brew install xcodegen
+scripts/build-local-adhoc.sh
+open build/adhoc/SteamPack.app
+```
+
+The command builds both the app and its Control Center extension as a locally
+sealed bundle. To evaluate the installed Control Center controls, copy this
+same bundle to `/Applications` and run the verification command printed by the
+script. A Developer ID-signed and notarized DMG remains required for a public
+release.
+
 ## Use SteamPack
 
 Open the SteamPack menu bar icon and choose the mode you need.
